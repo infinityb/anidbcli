@@ -53,6 +53,8 @@ class AnidbConnector:
             except socket.timeout:
                 if tries == 0:
                     raise
+                else:
+                    continue
             if response.startswith(b'555 '):
                 raise AnidbApiBanned(response.decode('utf-8'))
             response = self._crypto.Decrypt(response)
