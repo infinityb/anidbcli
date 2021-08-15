@@ -9,7 +9,7 @@ import time
 import shutil
 
 import anidbcli.libed2k as libed2k 
-from anidbcli.protocol import FileAmaskField, FileFmaskField, FileRequest
+from anidbcli.protocol import parse_data, FileAmaskField, FileFmaskField, FileRequest
 
 API_ENDPOINT_MYLYST_ADD = "MYLISTADD size=%d&ed2k=%s&viewed=%d&state=%s"
 API_ENDPOINT_MYLYST_EDIT = "MYLISTADD size=%d&ed2k=%s&edit=1&viewed=%d&state=%s"
@@ -39,12 +39,12 @@ class MylistAddOperation(Operation):
     def Process(self, file):
         try:
             res = self.connector.send_request(API_ENDPOINT_MYLYST_ADD % (file["size"], file["ed2k"], self.viewed, int(self.state)))
-            if res["code"] == RESULT_MYLIST_ENTRY_ADDED:
+            if res.code == RESULT_MYLIST_ENTRY_ADDED:
                 self.output.success("Mylist entry added.")
-            elif res["code"] == RESULT_ALREADY_IN_MYLIST:
+            elif res.code == RESULT_ALREADY_IN_MYLIST:
                 self.output.warning("Already in mylist.")
                 res = self.connector.send_request(API_ENDPOINT_MYLYST_EDIT % (file["size"], file["ed2k"], self.viewed, int(self.state)))
-                if res["code"] == RESULT_MYLIST_ENTRY_EDITED:
+                if res.code == RESULT_MYLIST_ENTRY_EDITED:
                     self.output.success("Mylist entry state updated.")
                 else:
                     self.output.warning("Could not mark as watched.")
@@ -144,13 +144,12 @@ class GetFileInfoOperation(Operation):
         try:
             res = self.connector.send_request(request)
         except Exception as e:
-            self.output.error("Failed to get file info: " + str(e))
+            self.output.error(f"Failed to get file info: {e}")
             return False
-        if res["code"] != RESULT_FILE:
-            self.output.error("Failed to get file info: %s" % res["data"])
+        if res.code != RESULT_FILE:
+            self.output.error(f"Failed to get file info: {res!r}")
             return False
-        parsed = parse_data(res["data"].split("\n")[1])
-        print(f"parsed={parsed!r}")
+        parsed = parse_data(res.body)
 
         fileinfo = {}
         need_anime_request = False
@@ -165,15 +164,24 @@ class GetFileInfoOperation(Operation):
         if need_anime_request:
             try:
                 res = self.connector.send_request(request_anime_only)
-                parsed = parsed + parse_data(res["data"].split("\n")[1])
+                parsed = parsed + parse_data(res.body)
             except Exception as e:
-                self.output.error("Failed to get file info: " + str(e))
+                self.output.error(f"Failed to get file info: {e}")
                 return False
-            if res["code"] != RESULT_FILE:
-                self.output.error("Failed to get file info: %s" % res["data"])
+            if res.code != RESULT_FILE:
+                self.output.error(f"Failed to get file info: {res!r}")
                 return False
             for (k, v) in zip(request_anime_only.field_names(), parsed):
                 fileinfo[k] = v
+
+        if not need_anime_request:
+            res.decode_with_query(request)
+            differences = [(k, res.decoded.get(k, None), fileinfo.get(k, None))
+                for k in (fileinfo.keys() | res.decoded.keys())
+                if res.decoded.get(k, None) != fileinfo.get(k, None)
+            ]
+            if differences:
+                self.output.error(f"Decode differences: {differences!r}")
 
         fileinfo["version"] = ""
         fileinfo["censored"] = ""
@@ -242,7 +250,7 @@ class RenameOperation(Operation):
                     shutil.move(f, tmp_tgt + file_extension)
                     self.output.success(f"File renamed to: {tmp_tgt + file_extension!r}")
             except:
-                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}\n")
+                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}")
         if self.delete_empty and len(os.listdir(os.path.dirname(file["path"]))) == 0:
             os.removedirs(os.path.dirname(file["path"]))
         file["path"] = target + base_ext
@@ -256,15 +264,6 @@ def filename_friendly(input):
     input = input.replace("?","")
     return input
 
-def parse_data(raw_data):
-    res = raw_data.split("|")
-    for idx, item in enumerate(res):
-        item = item.replace("'", "§") # preseve lists by converting UDP list delimiter ' to § (§ seems unused in AniDB)
-        item = item.replace("<br />", "\n")
-        item = item.replace("/", "|")
-        item = item.replace("`", "'")
-        res[idx] = item
-    return res
 
 def construct_helper_tags(fileinfo):
     year_list = re.findall('(\d{4})', fileinfo["year"])

@@ -1,4 +1,80 @@
 from collections import namedtuple
+from datetime import datetime
+
+def parse_data(raw_data):
+    res = raw_data.split("|")
+    for idx, item in enumerate(res):
+        item = item.replace("'", "§")  # preseve lists by converting UDP list delimiter ' to § (§ seems unused in AniDB)
+        item = item.replace("<br />", "\n")
+        item = item.replace("/", "|")
+        item = item.replace("`", "'")
+        res[idx] = item
+    return res
+
+
+class AnidbApiException(RuntimeError):
+    pass
+
+
+class AnidbApiBanned(AnidbApiException):
+    pass
+
+
+class AnidbResponse(object):
+    def __init__(self, code, data):
+        self.code = code
+        self.data = data
+        self.extended = None
+        self.body = None
+        self.decoded = None
+
+    @classmethod
+    def parse(cls, binary):
+        (code_text, rest) = binary.split(' ', 1)
+        code = int(code_text)
+        inst = cls(code, rest)
+        parts = rest.split("\n", 1)
+        if len(parts) == 2:
+            inst.extended = parts[0]
+            inst.body = parts[1]
+            print(f"inst.body={inst.body}")
+            #if not inst.body.endswith("\n"):
+            #    raise RuntimeError('Truncated')
+        return inst
+
+    def _repr_fields(self):
+        yield ('code', self.code)
+        yield ('data', self.data)
+        if self.extended is not None:
+            yield ('extended', self.extended)
+        if self.body is not None:
+            yield ('body', self.body)
+        if self.decoded is not None:
+            yield ('decoded', self.decoded)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
+
+    def decode_with_query(self, query):
+        parsed = parse_data(self.body)
+        if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
+            raise RuntimeError('Truncated')
+
+        out = {}
+        for (k, v) in zip(parsed, query.IMPLICIT_FIELDS):
+            out[k] = v
+        for (f, v) in zip(parsed[len(query.IMPLICIT_FIELDS):], query.fields):
+            out[f.name] = f.filter_value(v)
+        self.decoded = out
+
+    def __getitem__(self, name):
+        if name == "code":
+            return self.code
+        if name == "data":
+            return self.data
+        raise KeyError(f"{name}")
+
 
 class AnidbApiCall(object):
     def field_names(self):
@@ -35,8 +111,7 @@ class FileRequest(AnidbApiCall, namedtuple('_FileRequest', ['size', 'ed2k', 'fie
                 fmask |= f.to_bitfield()
             if isinstance(f, FileAmaskField):
                 amask |= f.to_bitfield()
-        return "FILE size={}&ed2k={}&fmask={:010X}&amask={:08X}".format(
-            self.size, self.ed2k, fmask, amask)
+        return f"FILE size={self.size}&ed2k={self.ed2k}&fmask={fmask:010X}&amask={amask:08X}"
 
 
 class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte', 'bit'])):
@@ -54,6 +129,9 @@ class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte',
             cls.BIT_POSITION_LOOKUP[(v.byte, v.bit)] = v
             setattr(cls.f, v.name, v)
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
+
+    def filter_value(self, field_value):
+        return field_value
 
     def to_bitfield(self):
         return 1 << 8 * (7 - self.byte) + self.bit
@@ -128,6 +206,12 @@ class FileFmaskField(MaskField, namedtuple('_FileFmaskField', ['byte', 'bit', 'n
     BIT_POSITION_LOOKUP = {}
     f = type(object)('FileFmaskFieldHolder', (), {})
 
+    def __init__(self, byte, bit, name, pytype):
+        self.byte = byte
+        self.bit = bit
+        self.name = name
+        self.pytype = pytype
+
     def to_sort_tuple(self):
         return (1, 0, self.byte, 7 - self.bit)
 
@@ -138,6 +222,17 @@ class FileFmaskField(MaskField, namedtuple('_FileFmaskField', ['byte', 'bit', 'n
             cls.BIT_POSITION_LOOKUP[(v.byte, v.bit)] = v
             setattr(cls.f, v.name, v)
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
+
+    def filter_value(self, field_value):
+        if self.pytype is None:
+            return field_value
+        if self.pytype is str:
+            return field_value
+        if self.pytype == int:
+            return int(field_value)
+        if self.pytype == datetime:
+            return datetime.datetime.fromtimestamp(int(field_value))
+        return field_value
 
     def to_bitfield(self):
         return 1 << 8 * (self.BYTE_LENGTH - self.byte) + self.bit
@@ -188,7 +283,7 @@ FileFmaskField.register_all([
     FileFmaskField(4, 6, 'sub_language', str),
     FileFmaskField(4, 5, 'length', int),  # was: length_in_seconds
     FileFmaskField(4, 4, 'description', str),
-    FileFmaskField(4, 3, 'aired', int),  # was: aired_date
+    FileFmaskField(4, 3, 'aired', datetime),  # was: aired_date
     # FileFmaskField(4, 2, 'unused'),
     # FileFmaskField(4, 1, 'unused'),
     FileFmaskField(4, 0, 'filename', str),  # was: anidb_file_name
@@ -218,6 +313,9 @@ class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'n
             cls.BIT_POSITION_LOOKUP[(v.byte, v.bit)] = v
             setattr(cls.f, v.name, v)
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
+
+    def filter_value(self, field_value):
+        return field_value
 
     def to_bitfield(self):
         return 1 << 8 * (4 - self.byte) + self.bit

@@ -3,8 +3,9 @@ import hashlib
 import time
 import os
 import json
+
 import anidbcli.encryptors as encryptors
-from anidbcli.protocol import AnidbApiCall
+from anidbcli.protocol import AnidbApiCall, AnidbApiBanned, AnidbResponse
 
 API_ADDRESS = "api.anidb.net"
 API_PORT = 9000
@@ -21,6 +22,7 @@ LOGIN_ACCEPTED = 200
 LOGIN_ACCEPTED_NEW_VERSION_AVAILABLE = 201
 
 
+
 class AnidbConnector:
     def __init__(self, bind_addr = None):
         """For class initialization use class methods create_plain or create_secure."""
@@ -30,12 +32,31 @@ class AnidbConnector:
             self.socket.bind(tuple(bind_addr))
         self.socket.connect((socket.gethostbyname_ex(API_ADDRESS)[2][0], API_PORT))
         self.socket.settimeout(SOCKET_TIMEOUT)
-        self.crypto = encryptors.PlainTextCrypto()
-        self.salt = None
-        self.last_sent_request = 0
+        self._crypto = encryptors.PlainTextCrypto()
+        self._salt = None
+        self._last_sent_request = 0
 
-    def _set_crypto(self, crypto):
-        self.crypto = crypto
+    def _send_request_raw(self, data, tries=1):
+        data = self._crypto.Encrypt(data)
+
+        while 0 < tries:
+            tries -= 1
+            now = time.monotonic()
+            since_last_sent = now - self._last_sent_request
+            if since_last_sent < 2.0:
+                time.sleep(2.0 - since_last_sent)
+            self._last_sent_request = now
+
+            self.socket.send(data)
+            try:
+                response = self.socket.recv(MAX_RECEIVE_SIZE)
+            except socket.timeout:
+                if tries == 0:
+                    raise
+            if response.startswith(b'555 '):
+                raise AnidbApiBanned(response.decode('utf-8'))
+            response = self._crypto.Decrypt(response)
+            return AnidbResponse.parse(response.rstrip("\n"))
 
     @classmethod
     def create_plain(cls, username, password):
@@ -48,32 +69,34 @@ class AnidbConnector:
     def create_secure(cls, username, password, api_key):
         """Creates AES128 encrypted UDP API connection using the provided credenitals and users api key."""
         instance = cls()
-        enc_res = instance.send_request(API_ENDPOINT_ENCRYPT % username, False)
-        if enc_res["code"] != ENCRYPTION_ENABLED:
-            raise Exception(enc_res["data"])
-        instance.salt = enc_res["data"].split(" ")[0]
-        md5 = hashlib.md5(bytes(api_key + instance.salt, "ascii"))
-        instance._set_crypto(encryptors.Aes128TextEncryptor(md5.digest()))
+        enc_res = instance._send_request_raw(API_ENDPOINT_ENCRYPT % username)
+        if enc_res.code != ENCRYPTION_ENABLED:
+            raise Exception(enc_res.data)
+        instance._salt = enc_res.data.split(" ", 1)[0]
+        md5 = hashlib.md5(bytes(api_key + instance._salt, "ascii"))
+        instance._crypto = encryptors.Aes128TextEncryptor(md5.digest())
+
         instance._login(username, password)
         return instance
+
     @classmethod
     def create_from_session(cls, session_key, sock_addr, api_key, salt):
-        """Crates instance from an existing session. If salt is not None, encrypted instance is created."""
+        """Creates instance from an existing session. If salt is not None, encrypted instance is created."""
         instance = cls(sock_addr)
         instance.session = session_key
         if (salt != None):
-            instance.salt = salt
-            md5 = hashlib.md5(bytes(api_key + instance.salt, "ascii"))
-            instance._set_crypto(encryptors.Aes128TextEncryptor(md5.digest()))
+            instance._salt = salt
+            md5 = hashlib.md5(bytes(api_key + instance._salt, "ascii"))
+            instance._crypto = encryptors.Aes128TextEncryptor(md5.digest())
         return instance
 
 
     def _login(self, username, password):
-        response = self.send_request(API_ENDPOINT_LOGIN % (username, password), False)
-        if response["code"] == LOGIN_ACCEPTED or response["code"] == LOGIN_ACCEPTED_NEW_VERSION_AVAILABLE:
-            self.session = response["data"].split(" ")[0]
+        response = self._send_request_raw(API_ENDPOINT_LOGIN % (username, password))
+        if response.code == LOGIN_ACCEPTED or response.code == LOGIN_ACCEPTED_NEW_VERSION_AVAILABLE:
+            self.session = response.data.split(" ")[0]
         else:
-            raise Exception(response["data"])
+            raise Exception(response.data)
 
     def close(self, persistent, persist_file):
         """Logs out the user from current session and closes the connection."""
@@ -88,13 +111,15 @@ class AnidbConnector:
             d["timestamp"] = time.time()
             d["salt"] = None
             d["sockaddr"] = self.socket.getsockname()
-            if (self.salt): d["salt"] = self.salt
+            if (self_.salt):
+                d["salt"] = self_.salt
             with open(persist_file, "w") as file:
                 file.writelines(json.dumps(d))
         else:
             try:
                 os.remove(persist_file)
-            except: pass # does not exist
+            except:
+                pass
             self.send_request(API_ENDPOINT_LOGOUT % self.session, False)
         self.socket.close()
 
@@ -110,28 +135,5 @@ class AnidbConnector:
             if not self.session:
                 raise Exception("No session was set")
             content += "&s=%s" % self.session
-        res = None
 
-        for _ in range(RETRY_COUNT):
-            now = time.monotonic()
-            since_last_sent = now - self.last_sent_request
-            if since_last_sent < 2.0:
-                time.sleep(2.0 - since_last_sent)
-            try:
-                self.socket.send(self.crypto.Encrypt(content))
-                res = self.socket.recv(MAX_RECEIVE_SIZE)
-                break
-            except: # Socket timeout / udp packet dropped
-                time.sleep(1)
-                pass
-            finally:
-                self.last_sent_request = now
-        if not res:
-            raise Exception("Cound not connect to anidb UDP API: Socket timeout.")
-        res = self.crypto.Decrypt(res)
-        res = res.rstrip("\n")
-        response = dict()
-        response["code"] = int(res[:3])
-        response["data"] = res[4:]
-        response["query"] = original_content
-        return response
+        return self._send_request_raw(content, tries=RETRY_COUNT)
