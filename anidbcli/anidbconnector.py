@@ -31,6 +31,7 @@ class AnidbConnector:
         self.socket.settimeout(SOCKET_TIMEOUT)
         self.crypto = encryptors.PlainTextCrypto()
         self.salt = None
+        self.last_sent_request = 0
 
     def _set_crypto(self, crypto):
         self.crypto = crypto
@@ -99,19 +100,30 @@ class AnidbConnector:
 
     def send_request(self, content, appendSession=True):
         """Sends request to the API and returns a dictionary containing response code and data."""
+
+        original_content = content
+        if isinstance(original_content, AnidbApiCall):
+            content = original_content.serialize()
+
         if appendSession:
             if not self.session:
                 raise Exception("No session was set")
             content += "&s=%s" % self.session
         res = None
         for _ in range(RETRY_COUNT):
+            now = time.monotonic()
+            since_last_sent = now - self.last_sent_request
+            if since_last_sent < 2.0:
+                time.sleep(2.0 - since_last_sent)
             try:
                 self.socket.send(self.crypto.Encrypt(content))
                 res = self.socket.recv(MAX_RECEIVE_SIZE)
                 break
-            except: # Socket timeout / upd packet not sent
+            except: # Socket timeout / udp packet dropped
                 time.sleep(1)
                 pass
+            finally:
+                self.last_sent_request = now
         if not res:
             raise Exception("Cound not connect to anidb UDP API: Socket timeout.")
         res = self.crypto.Decrypt(res)
@@ -119,4 +131,6 @@ class AnidbConnector:
         response = dict()
         response["code"] = int(res[:3])
         response["data"] = res[4:]
+        response["query"] = original_content
+
         return response

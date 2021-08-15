@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+
 import os
 import datetime
 import re
@@ -8,11 +9,13 @@ import time
 import shutil
 
 import anidbcli.libed2k as libed2k 
+import anidbcli.protocol as FileAmaskField, FileFmaskField, FileRequest
 
+
+# {int4 aid}|{int4 eps}|{int4 ep count}|{int4 special cnt}|{int4 rating}|{int4 votes}|{int4 tmprating}|{int4 tmpvotes}|{int4 review rating average}|{int4 reviews}|{str year}|{str type}|{str romaji}|{str kanji}|{str english}|{str other}|{str short names}|{str synonyms}|{str category list}
 # ed2k,md5,sha1,crc32,resolution,aired,year,romanji,kanji,english,epno,epname,epromanji,epkanji,groupname,shortgroupname
-API_ENDPOINT_FILE = "FILE size=%d&ed2k=%s&fmask=79FAFFE900&amask=F2FCF0C0"
-API_ENDPOINT_FILE_ONLY_ANIMEINFO = "FILE size=%d&ed2k=%s&fmask=0000000000&amask=F2FCF0C0"
-
+API_ENDPOINT_FILE = "FILE size=%d&ed2k=%s&fmask=79FAFFE900&amask=F0FCF0C0"
+API_ENDPOINT_FILE_ONLY_ANIMEINFO = "FILE size=%d&ed2k=%s&fmask=0000000000&amask=F0FCF0C0"
 
 API_ENDPOINT_MYLYST_ADD = "MYLISTADD size=%d&ed2k=%s&viewed=%d&state=%s"
 API_ENDPOINT_MYLYST_EDIT = "MYLISTADD size=%d&ed2k=%s&edit=1&viewed=%d&state=%s"
@@ -76,6 +79,10 @@ class HashOperation(Operation):
         return True
 
 
+API_ENDPOINT_FILE = "FILE size=%d&ed2k=%s&fmask=79FAFFE900&amask=F2FCF0C0"
+API_ENDPOINT_FILE_ONLY_ANIMEINFO = "FILE size=%d&ed2k=%s&fmask=0000000000&amask=F2FCF0C0"
+
+
 class GetFileInfoOperation(Operation):
     def __init__(self, connector, output):
         self.connector = connector
@@ -83,8 +90,69 @@ class GetFileInfoOperation(Operation):
 
 
     def Process(self, file):
+        request = FileRequest(file['size'], file['ed2k'], fields=[
+            FileFmaskField.f.aid,
+            FileFmaskField.f.eid,
+            FileFmaskField.f.gid,
+            FileFmaskField.f.mylist_id,
+            FileFmaskField.f.state,
+            FileFmaskField.f.size,
+            FileFmaskField.f.ed2k,
+            FileFmaskField.f.md5,
+            FileFmaskField.f.sha1,
+            FileFmaskField.f.crc32,
+            FileFmaskField.f.video_colour_depth,
+            FileFmaskField.f.quality,
+            FileFmaskField.f.source,
+            FileFmaskField.f.audio_codec_list,
+            FileFmaskField.f.audio_bitrate_list,
+            FileFmaskField.f.video_codec,
+            FileFmaskField.f.video_bitrate,
+            FileFmaskField.f.video_resolution,
+            FileFmaskField.f.file_type,
+            FileFmaskField.f.dub_language,
+            FileFmaskField.f.sub_language,
+            FileFmaskField.f.length_in_seconds,
+            FileFmaskField.f.aired_date,
+            FileFmaskField.f.anidb_file_name,
+            FileAmaskField.f.anime_total_episodes,
+            FileAmaskField.f.highest_episode_number,
+            FileAmaskField.f.year,
+            FileAmaskField.f.type,
+            FileAmaskField.f.romaji_name,
+            FileAmaskField.f.kanji_name,
+            FileAmaskField.f.english_name,
+            FileAmaskField.f.other_name,
+            FileAmaskField.f.short_name_list,
+            FileAmaskField.f.synonym_list,
+            FileAmaskField.f.epno,
+            FileAmaskField.f.ep_name,
+            FileAmaskField.f.ep_romaji_name,
+            FileAmaskField.f.ep_kanji_name,
+            FileAmaskField.f.group_name,
+            FileAmaskField.f.group_short_name,
+        ])
+        request_anime_only = FileRequest(file['size'], file['ed2k'], fields=[
+            FileAmaskField.f.anime_total_episodes,
+            FileAmaskField.f.highest_episode_number,
+            FileAmaskField.f.year,
+            FileAmaskField.f.type,
+            FileAmaskField.f.romaji_name,
+            FileAmaskField.f.kanji_name,
+            FileAmaskField.f.english_name,
+            FileAmaskField.f.other_name,
+            FileAmaskField.f.short_name_list,
+            FileAmaskField.f.synonym_list,
+            FileAmaskField.f.epno,
+            FileAmaskField.f.ep_name,
+            FileAmaskField.f.ep_romaji_name,
+            FileAmaskField.f.ep_kanji_name,
+            FileAmaskField.f.group_name,
+            FileAmaskField.f.group_short_name,
+        ])
+
         try:
-            res = self.connector.send_request(API_ENDPOINT_FILE % (file["size"], file["ed2k"]))
+            res = self.connector.send_request(request)
         except Exception as e:
             self.output.error("Failed to get file info: " + str(e))
             return False
@@ -92,12 +160,12 @@ class GetFileInfoOperation(Operation):
             self.output.error("Failed to get file info: %s" % res["data"])
             return False
         parsed = parse_data(res["data"].split("\n")[1])
-        if len(parsed) < 42:
+        print(f"parsed={parsed!r}")
+        if len(parsed) < 41:
             try:
-                parsed = parsed[:25] # Take file info only
-                time.sleep(2) # UDP API allows max one request per 2 seconds
-                res = self.connector.send_request(API_ENDPOINT_FILE_ONLY_ANIMEINFO % (file["size"], file["ed2k"]))
-                parsed = parsed + parse_data(res["data"].split("\n")[1])[1:] # Add new anime info (file id on index 0)
+                parsed = parsed[:25]  # Take file info only
+                res = self.connector.send_request(request_anime_only)
+                parsed = parsed + parse_data(res["data"].split("\n")[1])[1:]  # Add new anime info (file id on index 0)
             except Exception as e:
                 self.output.error("Failed to get file info: " + str(e))
                 return False
@@ -135,19 +203,19 @@ class GetFileInfoOperation(Operation):
         fileinfo["ep_last"] = parsed[26]
         fileinfo["year"] = parsed[27]
         fileinfo["a_type"] = parsed[28]
-        fileinfo["a_categories"] = parsed[29]
-        fileinfo["a_romaji"] = parsed[30]
-        fileinfo["a_kanji"] = parsed[31]
-        fileinfo["a_english"] = parsed[32]
-        fileinfo["a_other"] = parsed[33]
-        fileinfo["a_short"] = parsed[34]
-        fileinfo["a_synonyms"] = parsed[35]
-        fileinfo["ep_no"] = parsed[36]
-        fileinfo["ep_english"] = parsed[37]
-        fileinfo["ep_romaji"] = parsed[38]
-        fileinfo["ep_kanji"] = parsed[39]
-        fileinfo["g_name"] = parsed[40]
-        fileinfo["g_sname"] = parsed[41]
+        # fileinfo["a_categories"] = parsed[29]
+        fileinfo["a_romaji"] = parsed[29]
+        fileinfo["a_kanji"] = parsed[30]
+        fileinfo["a_english"] = parsed[31]
+        fileinfo["a_other"] = parsed[32]
+        fileinfo["a_short"] = parsed[33]
+        fileinfo["a_synonyms"] = parsed[34]
+        fileinfo["ep_no"] = parsed[35]
+        fileinfo["ep_english"] = parsed[36]
+        fileinfo["ep_romaji"] = parsed[37]
+        fileinfo["ep_kanji"] = parsed[38]
+        fileinfo["g_name"] = parsed[39]
+        fileinfo["g_sname"] = parsed[40]
         fileinfo["version"] = ""
         fileinfo["censored"] = ""
         
@@ -186,19 +254,19 @@ class RenameOperation(Operation):
             try:
                 file["info"]["aired"] = file["info"]["aired"].strftime("%Y-%m-%d")
             except:
-                pass # Invalid input format, leave as is
+                pass  # Invalid input format, leave as is
         target = self.target_path
         for tag in file["info"]:
             if (self.abort and ("%"+tag+"%" in target) and IsNullOrWhitespace(file["info"][tag])):
-                self.output.error("Rename aborted, " + tag + " is empty.")
+                self.output.error(f"Rename aborted, {tag!r} is empty.")
                 return
             target = target.replace("%"+tag+"%", filename_friendly(file["info"][tag])) # Remove path invalid characters
-        target = ' '.join(target.split()) # Replace multiple whitespaces with one
+        target = ' '.join(target.split())  # Replace multiple whitespaces with one
         filename, base_ext = os.path.splitext(file["path"])
         for f in glob.glob(glob.escape(filename) + "*"): # Find subtitle files
             try:
                 tmp_tgt = target
-                if self.keep_structure: # Prepend original directory if set
+                if self.keep_structure:  # Prepend original directory if set
                     tmp_tgt = os.path.join(os.path.dirname(f),target)
                 _, file_extension = os.path.splitext(f)
                 try:
@@ -207,15 +275,15 @@ class RenameOperation(Operation):
                     pass
                 if self.soft_link:
                     os.symlink(f, tmp_tgt + file_extension)
-                    self.output.success("Created soft link: \"%s\"" % (tmp_tgt + file_extension))
+                    self.output.success(f"Created soft link: {tmp_tgt + file_extension!r}")
                 elif self.hard_link:
                     os.link(f, tmp_tgt + file_extension)
-                    self.output.success("Created hard link: \"%s\"" % (tmp_tgt + file_extension))
+                    self.output.success(f"Created hard link: {tmp_tgt + file_extension!r}")
                 else:
                     shutil.move(f, tmp_tgt + file_extension)
-                    self.output.success("File renamed to: \"%s\"" % (tmp_tgt + file_extension))
+                    self.output.success(f"File renamed to: {tmp_tgt + file_extension!r}")
             except:
-                self.output.error("Failed to rename/link to: \"%s\"" % (tmp_tgt + file_extension) + "\n")
+                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}\n")
         if self.delete_empty and len(os.listdir(os.path.dirname(file["path"]))) == 0:
             os.removedirs(os.path.dirname(file["path"]))
         file["path"] = target + base_ext
