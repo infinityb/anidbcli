@@ -1,7 +1,8 @@
 from collections import namedtuple
 
 class AnidbApiCall(object):
-    pass
+    def field_names(self):
+        return self.IMPLICIT_FIELDS + [f.name for f in self.fields]
 
 
 class MaskField(object):
@@ -25,15 +26,16 @@ class MaskField(object):
 
 
 class FileRequest(AnidbApiCall, namedtuple('_FileRequest', ['size', 'ed2k', 'fields'])):
+    IMPLICIT_FIELDS = ['fid']
     def serialize(self):
-        fmask_fields = 0
-        amask_fields = 0
+        fmask = 0
+        amask = 0
         for f in self.fields:
             if isinstance(f, FileFmaskField):
-                fmask_fields &= f.to_bitfield()
+                fmask |= f.to_bitfield()
             if isinstance(f, FileAmaskField):
-                amask_fields &= f.to_bitfield()
-        return "FILE size={}&ed2k={}&fmask={:010x}&amask={:08x}".format(
+                amask |= f.to_bitfield()
+        return "FILE size={}&ed2k={}&fmask={:010X}&amask={:08X}".format(
             self.size, self.ed2k, fmask, amask)
 
 
@@ -159,10 +161,10 @@ FileFmaskField.register_all([
     FileFmaskField(1, 6, 'aid', int),
     FileFmaskField(1, 5, 'eid', int),
     FileFmaskField(1, 4, 'gid', int),
-    FileFmaskField(1, 3, 'mylist_id', int),
+    FileFmaskField(1, 3, 'lid', int),  # was: mylist_id
     FileFmaskField(1, 2, 'other_episodes', None),
     FileFmaskField(1, 1, 'IsDeprecated', int),
-    FileFmaskField(1, 0, 'state', int),
+    FileFmaskField(1, 0, 'file_state', int),  # was: state
 
     FileFmaskField(2, 7, 'size', int),
     FileFmaskField(2, 6, 'ed2k', str),
@@ -170,26 +172,26 @@ FileFmaskField.register_all([
     FileFmaskField(2, 4, 'sha1', str),
     FileFmaskField(2, 3, 'crc32', str),
     # FileFmaskField(2, 2, 'unused', None),
-    FileFmaskField(2, 1, 'video_colour_depth', None),
+    FileFmaskField(2, 1, 'color_depth', None),  # was: video_colour_depth
     # FileFmaskField(2, 0, 'reserved'),
 
     FileFmaskField(3, 7, 'quality', str),
     FileFmaskField(3, 6, 'source', str),
-    FileFmaskField(3, 5, 'audio_codec_list', str),
-    FileFmaskField(3, 4, 'audio_bitrate_list', int),
+    FileFmaskField(3, 5, 'audio_codec', str),  # was: audio_codec_list
+    FileFmaskField(3, 4, 'audio_bitrate', int),  # was: audio_bitrate_list
     FileFmaskField(3, 3, 'video_codec', str),
     FileFmaskField(3, 2, 'video_bitrate', int),
-    FileFmaskField(3, 1, 'video_resolution', str),
-    FileFmaskField(3, 0, 'file_type', str),
+    FileFmaskField(3, 1, 'resolution', str),  # was: video_resolution
+    FileFmaskField(3, 0, 'filetype', str),  # was: file_type
 
     FileFmaskField(4, 7, 'dub_language', str),
     FileFmaskField(4, 6, 'sub_language', str),
-    FileFmaskField(4, 5, 'length_in_seconds', int),
+    FileFmaskField(4, 5, 'length', int),  # was: length_in_seconds
     FileFmaskField(4, 4, 'description', str),
-    FileFmaskField(4, 3, 'aired_date', int),
+    FileFmaskField(4, 3, 'aired', int),  # was: aired_date
     # FileFmaskField(4, 2, 'unused'),
     # FileFmaskField(4, 1, 'unused'),
-    FileFmaskField(4, 0, 'anidb_file_name', str),
+    FileFmaskField(4, 0, 'filename', str),  # was: anidb_file_name
 
     FileFmaskField(5, 7, 'mylist_state', int),
     FileFmaskField(5, 6, 'mylist_filestate', int),
@@ -235,49 +237,30 @@ class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'n
 
 
 FileAmaskField.register_all([
-    FileAmaskField(1, 7, 'anime_total_episodes'),
-    FileAmaskField(1, 6, 'highest_episode_number'),
+    FileAmaskField(1, 7, 'ep_total'),  # was: anime_total_episodes
+    FileAmaskField(1, 6, 'ep_last'),  # was: highest_episode_number
     FileAmaskField(1, 5, 'year'),
-    FileAmaskField(1, 4, 'type'),
+    FileAmaskField(1, 4, 'a_type'),  # was: type
     FileAmaskField(1, 3, 'related_aid_list'),
     FileAmaskField(1, 2, 'related_aid_type'),
-    FileAmaskField(1, 1, 'category_list'),
+    FileAmaskField(1, 1, 'a_categories'),  # was category_list
 
-    FileAmaskField(2, 7, 'romaji_name'),
-    FileAmaskField(2, 6, 'kanji_name'),
-    FileAmaskField(2, 5, 'english_name'),
-    FileAmaskField(2, 4, 'other_name'),
-    FileAmaskField(2, 3, 'short_name_list'),
-    FileAmaskField(2, 2, 'synonym_list'),
+    FileAmaskField(2, 7, 'a_romaji'),  # was: romaji_name
+    FileAmaskField(2, 6, 'a_kanji'),  # was: kanji_name
+    FileAmaskField(2, 5, 'a_english'),  # was: english_name
+    FileAmaskField(2, 4, 'a_other'),  # was: other_name
+    FileAmaskField(2, 3, 'a_short'),  # was: short_name_list
+    FileAmaskField(2, 2, 'a_synonyms'),  # was: synonym_list
 
-    FileAmaskField(3, 7, 'epno'),
-    FileAmaskField(3, 6, 'ep_name'),
-    FileAmaskField(3, 5, 'ep_romaji_name'),
-    FileAmaskField(3, 4, 'ep_kanji_name'),
+    FileAmaskField(3, 7, 'ep_no'),  # was: epno
+    FileAmaskField(3, 6, 'ep_english'),  # was: ep_name
+    FileAmaskField(3, 5, 'ep_romaji'),  # was: ep_romaji_name
+    FileAmaskField(3, 4, 'ep_kanji'),  # was: ep_kanji_name
     FileAmaskField(3, 3, 'episode_rating'),
     FileAmaskField(3, 2, 'episode_vote_count'),
 
-    FileAmaskField(4, 7, 'group_name'),
-    FileAmaskField(4, 6, 'group_short_name'),
+    FileAmaskField(4, 7, 'g_name'),  # was: group_name
+    FileAmaskField(4, 6, 'g_sname'),  # was: group_short_name
     FileAmaskField(4, 0, 'date_aid_record_updated'),
 ])
-
-DEFAULT_API_ENDPOINT_FILE_AMASK = [
-    FileAmaskField.f.anime_total_episodes,
-    FileAmaskField.f.highest_episode_number,
-    FileAmaskField.f.year,
-    FileAmaskField.f.type,
-    FileAmaskField.f.romaji_name,
-    FileAmaskField.f.kanji_name,
-    FileAmaskField.f.english_name,
-    FileAmaskField.f.other_name,
-    FileAmaskField.f.short_name_list,
-    FileAmaskField.f.synonym_list,
-    FileAmaskField.f.epno,
-    FileAmaskField.f.ep_name,
-    FileAmaskField.f.ep_romaji_name,
-    FileAmaskField.f.ep_kanji_name,
-    FileAmaskField.f.group_name,
-    FileAmaskField.f.group_short_name,
-]
 

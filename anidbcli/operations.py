@@ -9,13 +9,7 @@ import time
 import shutil
 
 import anidbcli.libed2k as libed2k 
-import anidbcli.protocol as FileAmaskField, FileFmaskField, FileRequest
-
-
-# {int4 aid}|{int4 eps}|{int4 ep count}|{int4 special cnt}|{int4 rating}|{int4 votes}|{int4 tmprating}|{int4 tmpvotes}|{int4 review rating average}|{int4 reviews}|{str year}|{str type}|{str romaji}|{str kanji}|{str english}|{str other}|{str short names}|{str synonyms}|{str category list}
-# ed2k,md5,sha1,crc32,resolution,aired,year,romanji,kanji,english,epno,epname,epromanji,epkanji,groupname,shortgroupname
-API_ENDPOINT_FILE = "FILE size=%d&ed2k=%s&fmask=79FAFFE900&amask=F0FCF0C0"
-API_ENDPOINT_FILE_ONLY_ANIMEINFO = "FILE size=%d&ed2k=%s&fmask=0000000000&amask=F0FCF0C0"
+from anidbcli.protocol import FileAmaskField, FileFmaskField, FileRequest
 
 API_ENDPOINT_MYLYST_ADD = "MYLISTADD size=%d&ed2k=%s&viewed=%d&state=%s"
 API_ENDPOINT_MYLYST_EDIT = "MYLISTADD size=%d&ed2k=%s&edit=1&viewed=%d&state=%s"
@@ -79,10 +73,6 @@ class HashOperation(Operation):
         return True
 
 
-API_ENDPOINT_FILE = "FILE size=%d&ed2k=%s&fmask=79FAFFE900&amask=F2FCF0C0"
-API_ENDPOINT_FILE_ONLY_ANIMEINFO = "FILE size=%d&ed2k=%s&fmask=0000000000&amask=F2FCF0C0"
-
-
 class GetFileInfoOperation(Operation):
     def __init__(self, connector, output):
         self.connector = connector
@@ -94,61 +84,61 @@ class GetFileInfoOperation(Operation):
             FileFmaskField.f.aid,
             FileFmaskField.f.eid,
             FileFmaskField.f.gid,
-            FileFmaskField.f.mylist_id,
-            FileFmaskField.f.state,
+            FileFmaskField.f.lid,
+            FileFmaskField.f.file_state,
             FileFmaskField.f.size,
             FileFmaskField.f.ed2k,
             FileFmaskField.f.md5,
             FileFmaskField.f.sha1,
             FileFmaskField.f.crc32,
-            FileFmaskField.f.video_colour_depth,
+            FileFmaskField.f.color_depth,
             FileFmaskField.f.quality,
             FileFmaskField.f.source,
-            FileFmaskField.f.audio_codec_list,
-            FileFmaskField.f.audio_bitrate_list,
+            FileFmaskField.f.audio_codec,
+            FileFmaskField.f.audio_bitrate,
             FileFmaskField.f.video_codec,
             FileFmaskField.f.video_bitrate,
-            FileFmaskField.f.video_resolution,
-            FileFmaskField.f.file_type,
+            FileFmaskField.f.resolution,
+            FileFmaskField.f.filetype,
             FileFmaskField.f.dub_language,
             FileFmaskField.f.sub_language,
-            FileFmaskField.f.length_in_seconds,
-            FileFmaskField.f.aired_date,
-            FileFmaskField.f.anidb_file_name,
-            FileAmaskField.f.anime_total_episodes,
-            FileAmaskField.f.highest_episode_number,
+            FileFmaskField.f.length,
+            FileFmaskField.f.aired,
+            FileFmaskField.f.filename,
+            FileAmaskField.f.ep_total,
+            FileAmaskField.f.ep_last,
             FileAmaskField.f.year,
-            FileAmaskField.f.type,
-            FileAmaskField.f.romaji_name,
-            FileAmaskField.f.kanji_name,
-            FileAmaskField.f.english_name,
-            FileAmaskField.f.other_name,
-            FileAmaskField.f.short_name_list,
-            FileAmaskField.f.synonym_list,
-            FileAmaskField.f.epno,
-            FileAmaskField.f.ep_name,
-            FileAmaskField.f.ep_romaji_name,
-            FileAmaskField.f.ep_kanji_name,
-            FileAmaskField.f.group_name,
-            FileAmaskField.f.group_short_name,
+            FileAmaskField.f.a_type,
+            FileAmaskField.f.a_romaji,
+            FileAmaskField.f.a_kanji,
+            FileAmaskField.f.a_english,
+            FileAmaskField.f.a_other,
+            FileAmaskField.f.a_short,
+            FileAmaskField.f.a_synonyms,
+            FileAmaskField.f.ep_no,
+            FileAmaskField.f.ep_english,
+            FileAmaskField.f.ep_romaji,
+            FileAmaskField.f.ep_kanji,
+            FileAmaskField.f.g_name,
+            FileAmaskField.f.g_sname,
         ])
         request_anime_only = FileRequest(file['size'], file['ed2k'], fields=[
-            FileAmaskField.f.anime_total_episodes,
-            FileAmaskField.f.highest_episode_number,
+            FileAmaskField.f.ep_total,
+            FileAmaskField.f.ep_last,
             FileAmaskField.f.year,
-            FileAmaskField.f.type,
-            FileAmaskField.f.romaji_name,
-            FileAmaskField.f.kanji_name,
-            FileAmaskField.f.english_name,
-            FileAmaskField.f.other_name,
-            FileAmaskField.f.short_name_list,
-            FileAmaskField.f.synonym_list,
-            FileAmaskField.f.epno,
-            FileAmaskField.f.ep_name,
-            FileAmaskField.f.ep_romaji_name,
-            FileAmaskField.f.ep_kanji_name,
-            FileAmaskField.f.group_name,
-            FileAmaskField.f.group_short_name,
+            FileAmaskField.f.a_type,
+            FileAmaskField.f.a_romaji,
+            FileAmaskField.f.a_kanji,
+            FileAmaskField.f.a_english,
+            FileAmaskField.f.a_other,
+            FileAmaskField.f.a_short,
+            FileAmaskField.f.a_synonyms,
+            FileAmaskField.f.ep_no,
+            FileAmaskField.f.ep_english,
+            FileAmaskField.f.ep_romaji,
+            FileAmaskField.f.ep_kanji,
+            FileAmaskField.f.g_name,
+            FileAmaskField.f.g_sname,
         ])
 
         try:
@@ -161,61 +151,30 @@ class GetFileInfoOperation(Operation):
             return False
         parsed = parse_data(res["data"].split("\n")[1])
         print(f"parsed={parsed!r}")
-        if len(parsed) < 41:
+
+        fileinfo = {}
+        need_anime_request = False
+        if len(parsed) < len(request.field_names()):
+            need_anime_request = True
+            parsed = parsed[:25]
+        for (k, v) in zip(request.field_names(), parsed):
+            if k == 'aired':
+                fileinfo[k] = datetime.datetime.fromtimestamp(int(v))
+            else:
+                fileinfo[k] = v
+        if need_anime_request:
             try:
-                parsed = parsed[:25]  # Take file info only
                 res = self.connector.send_request(request_anime_only)
-                parsed = parsed + parse_data(res["data"].split("\n")[1])[1:]  # Add new anime info (file id on index 0)
+                parsed = parsed + parse_data(res["data"].split("\n")[1])
             except Exception as e:
                 self.output.error("Failed to get file info: " + str(e))
                 return False
             if res["code"] != RESULT_FILE:
                 self.output.error("Failed to get file info: %s" % res["data"])
                 return False
+            for (k, v) in zip(request_anime_only.field_names(), parsed):
+                fileinfo[k] = v
 
-        fileinfo = {}
-        fileinfo["fid"] = parsed[0]
-        fileinfo["aid"] = parsed[1]
-        fileinfo["eid"] = parsed[2]
-        fileinfo["gid"] = parsed[3]
-        fileinfo["lid"] = parsed[4]
-        fileinfo["file_state"] = parsed[5]
-        fileinfo["size"] = parsed[6]
-        fileinfo["ed2k"] = parsed[7]
-        fileinfo["md5"] = parsed[8]
-        fileinfo["sha1"] = parsed[9]
-        fileinfo["crc32"] = parsed[10]
-        fileinfo["color_depth"] = parsed[11]
-        fileinfo["quality"] = parsed[12]
-        fileinfo["source"] = parsed[13]
-        fileinfo["audio_codec"] = parsed[14]
-        fileinfo["audio_bitrate"] = parsed[15]
-        fileinfo["video_codec"] = parsed[16]
-        fileinfo["video_bitrate"] = parsed[17]
-        fileinfo["resolution"] = parsed[18]
-        fileinfo["filetype"] = parsed[19]
-        fileinfo["dub_language"] = parsed[20]
-        fileinfo["sub_language"] = parsed[21]
-        fileinfo["length"] = parsed[22]
-        fileinfo["aired"] = datetime.datetime.fromtimestamp(int(parsed[23]))
-        fileinfo["filename"] = parsed[24]
-        fileinfo["ep_total"] = parsed[25]
-        fileinfo["ep_last"] = parsed[26]
-        fileinfo["year"] = parsed[27]
-        fileinfo["a_type"] = parsed[28]
-        # fileinfo["a_categories"] = parsed[29]
-        fileinfo["a_romaji"] = parsed[29]
-        fileinfo["a_kanji"] = parsed[30]
-        fileinfo["a_english"] = parsed[31]
-        fileinfo["a_other"] = parsed[32]
-        fileinfo["a_short"] = parsed[33]
-        fileinfo["a_synonyms"] = parsed[34]
-        fileinfo["ep_no"] = parsed[35]
-        fileinfo["ep_english"] = parsed[36]
-        fileinfo["ep_romaji"] = parsed[37]
-        fileinfo["ep_kanji"] = parsed[38]
-        fileinfo["g_name"] = parsed[39]
-        fileinfo["g_sname"] = parsed[40]
         fileinfo["version"] = ""
         fileinfo["censored"] = ""
         

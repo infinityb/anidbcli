@@ -4,6 +4,7 @@ import time
 import os
 import json
 import anidbcli.encryptors as encryptors
+from anidbcli.protocol import AnidbApiCall
 
 API_ADDRESS = "api.anidb.net"
 API_PORT = 9000
@@ -110,6 +111,7 @@ class AnidbConnector:
                 raise Exception("No session was set")
             content += "&s=%s" % self.session
         res = None
+
         for _ in range(RETRY_COUNT):
             now = time.monotonic()
             since_last_sent = now - self.last_sent_request
@@ -132,5 +134,4 @@ class AnidbConnector:
         response["code"] = int(res[:3])
         response["data"] = res[4:]
         response["query"] = original_content
-
         return response
