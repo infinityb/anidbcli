@@ -2,10 +2,10 @@ import hashlib
 import functools
 import os
 import multiprocessing
-from joblib import Parallel, delayed
+from joblib import Parallel, parallel_backend, delayed
 
 CHUNK_SIZE = 9728000 # 9500KB
-MAX_CORES = 4
+MAX_CORES = 2  # fastest, experimentally chosen.
 
 def get_ed2k_link(file_path, file_hash=None):		
     name = os.path.basename(file_path)
@@ -21,23 +21,25 @@ def md4_hash(data):
         m.update(data)
         return m.digest()
 
+
 def hash_file(file_path):
     """ Returns the ed2k hash of a given file. """
-
-    
-
     def generator(f):
         while True:
-            x = f.read(CHUNK_SIZE)
-            if x:
-                yield x
-            else:
-                return    
+            buf = f.read(CHUNK_SIZE)
+            if not buf:
+                break
+            yield buf
 
     with open(file_path, 'rb') as f:
-        a = generator(f)
-        num_cores = min(multiprocessing.cpu_count(), MAX_CORES)
-        hashes = Parallel(n_jobs=num_cores)(delayed(md4_hash)(i) for i in a)
+        cpu_count = multiprocessing.cpu_count()
+        if cpu_count == 1:
+            hashes = [md4_hash(i) for i in generator(f)]
+        else:
+            # use threading, the loky backend is the same speed as sequential due
+            # to the serialization time.  md4 functions shouldn't hold the GIL?
+            with parallel_backend('threading', n_jobs=min(cpu_count, MAX_CORES)):
+                hashes = Parallel()(delayed(md4_hash)(i) for i in generator(f))
         if len(hashes) == 1:
             return hashes[0].hex()
         else:
