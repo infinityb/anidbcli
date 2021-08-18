@@ -113,8 +113,8 @@ class AnidbConnector:
             d["timestamp"] = time.time()
             d["salt"] = None
             d["sockaddr"] = self.socket.getsockname()
-            if (self_.salt):
-                d["salt"] = self_.salt
+            if self._salt:
+                d["salt"] = self._salt
             with open(persist_file, "w") as file:
                 file.writelines(json.dumps(d))
         else:

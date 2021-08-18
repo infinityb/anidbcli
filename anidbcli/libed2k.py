@@ -22,7 +22,7 @@ def md4_hash(data):
         return m.digest()
 
 
-def hash_file(file_path):
+def hash_file(file_path, parallel=None):
     """ Returns the ed2k hash of a given file. """
     def generator(f):
         while True:
@@ -30,16 +30,19 @@ def hash_file(file_path):
             if not buf:
                 break
             yield buf
-
     with open(file_path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(0, os.SEEK_SET)
         cpu_count = multiprocessing.cpu_count()
-        if cpu_count == 1:
+        if cpu_count == 1 or size < (4 * CHUNK_SIZE):  # a guess, threads have spin-up cost.
             hashes = [md4_hash(i) for i in generator(f)]
         else:
             # use threading, the loky backend is the same speed as sequential due
             # to the serialization time.  md4 functions shouldn't hold the GIL?
-            with parallel_backend('threading', n_jobs=min(cpu_count, MAX_CORES)):
-                hashes = Parallel()(delayed(md4_hash)(i) for i in generator(f))
+            if parallel is None:
+                parallel = Parallel(prefer="threads", n_jobs=min(cpu_count, MAX_CORES))
+            hashes = parallel(delayed(md4_hash)(i) for i in generator(f))
         if len(hashes) == 1:
             return hashes[0].hex()
         else:

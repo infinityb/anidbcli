@@ -164,13 +164,14 @@ class GetFileInfoOperation(Operation):
         if need_anime_request:
             try:
                 res = self.connector.send_request(request_anime_only)
-                parsed = parsed + parse_data(res.body)
+                parsed = parse_data(res.body)
             except Exception as e:
                 self.output.error(f"Failed to get file info: {e}")
                 return False
             if res.code != RESULT_FILE:
                 self.output.error(f"Failed to get file info: {res!r}")
                 return False
+            x = list(zip(request_anime_only.field_names(), parsed))
             for (k, v) in zip(request_anime_only.field_names(), parsed):
                 fileinfo[k] = v
 

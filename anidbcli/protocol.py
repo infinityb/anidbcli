@@ -27,7 +27,6 @@ class AnidbResponse(object):
         self.extended = None
         self.body = None
         self.decoded = None
-
     @classmethod
     def parse(cls, binary):
         (code_text, rest) = binary.split(' ', 1)
@@ -41,7 +40,6 @@ class AnidbResponse(object):
             #if not inst.body.endswith("\n"):
             #    raise RuntimeError('Truncated')
         return inst
-
     def _repr_fields(self):
         yield ('code', self.code)
         yield ('data', self.data)
@@ -51,20 +49,17 @@ class AnidbResponse(object):
             yield ('body', self.body)
         if self.decoded is not None:
             yield ('decoded', self.decoded)
-
     def __repr__(self):
         keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
         return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
-
     def decode_with_query(self, query):
         parsed = parse_data(self.body)
         if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
-            raise RuntimeError('Truncated')
-
+            raise RuntimeError(f'Truncated: {len(parsed)} != {len(query.IMPLICIT_FIELDS) + len(query.fields)}')
         out = {}
-        for (k, v) in zip(parsed, query.IMPLICIT_FIELDS):
+        for (k, v) in zip(query.IMPLICIT_FIELDS, parsed):
             out[k] = v
-        for (f, v) in zip(parsed[len(query.IMPLICIT_FIELDS):], query.fields):
+        for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):]):
             out[f.name] = f.filter_value(v)
         self.decoded = out
 
@@ -200,7 +195,7 @@ AnimeAmaskField.register_all([
 ])
 
 
-class FileFmaskField(MaskField, namedtuple('_FileFmaskField', ['byte', 'bit', 'name', 'pytype'])):
+class FileFmaskField(MaskField):
     BYTE_LENGTH = 5
     KNOWN_FIELDS = []
     BIT_POSITION_LOOKUP = {}
@@ -231,7 +226,7 @@ class FileFmaskField(MaskField, namedtuple('_FileFmaskField', ['byte', 'bit', 'n
         if self.pytype == int:
             return int(field_value)
         if self.pytype == datetime:
-            return datetime.datetime.fromtimestamp(int(field_value))
+            return datetime.fromtimestamp(int(field_value))
         return field_value
 
     def to_bitfield(self):
