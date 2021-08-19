@@ -88,12 +88,13 @@ def api(ctx, username, password, apikey, add, unwatched, rename, files, keep_str
             res = operation.Process(file_obj)
             if not res: # Critical error, cannot proceed with pipeline
                 break
-    conn.close(persistent, get_persistent_file_path())
-        
+    conn.close()
+
+
 def get_connector(apikey, username, password, persistent):
     conn = None
     if persistent:
-        path = get_persistent_file_path()
+        path = anidbconnector.get_persistent_file_path()
         if (os.path.exists(path)):
             with open(path, "r") as file:
                 lines = file.read()
@@ -107,14 +108,7 @@ def get_connector(apikey, username, password, persistent):
         conn = anidbconnector.AnidbConnector.create_plain(username, password)
     return conn
 
-def get_persistent_file_path():
-    path = os.getenv("APPDATA")
-    if (path == None): # Unix
-        path = os.getenv("HOME")
-        path = os.path.join(path, ".anidbcli", "session.json")
-    else:
-        path = os.path.join(path, "anidbcli", "session.json")
-    return path
+
     
 def get_files_to_process(files, ctx):
     to_process = []

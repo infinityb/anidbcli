@@ -21,12 +21,15 @@ class AnidbApiBanned(AnidbApiException):
 
 
 class AnidbResponse(object):
+    CODE_LOGIN_FIRST = 501
+
     def __init__(self, code, data):
         self.code = code
         self.data = data
         self.extended = None
         self.body = None
         self.decoded = None
+
     @classmethod
     def parse(cls, binary):
         (code_text, rest) = binary.split(' ', 1)
@@ -40,6 +43,7 @@ class AnidbResponse(object):
             #if not inst.body.endswith("\n"):
             #    raise RuntimeError('Truncated')
         return inst
+
     def _repr_fields(self):
         yield ('code', self.code)
         yield ('data', self.data)
@@ -49,9 +53,11 @@ class AnidbResponse(object):
             yield ('body', self.body)
         if self.decoded is not None:
             yield ('decoded', self.decoded)
+
     def __repr__(self):
         keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
         return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
+
     def decode_with_query(self, query):
         parsed = parse_data(self.body)
         if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):

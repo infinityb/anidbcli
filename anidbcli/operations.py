@@ -171,7 +171,6 @@ class GetFileInfoOperation(Operation):
             if res.code != RESULT_FILE:
                 self.output.error(f"Failed to get file info: {res!r}")
                 return False
-            x = list(zip(request_anime_only.field_names(), parsed))
             for (k, v) in zip(request_anime_only.field_names(), parsed):
                 fileinfo[k] = v
 
