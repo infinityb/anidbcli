@@ -1,3 +1,4 @@
+import warnings
 from collections import namedtuple
 from datetime import datetime
 
@@ -20,8 +21,21 @@ class AnidbApiBanned(AnidbApiException):
     pass
 
 
+class AnidbApiBadCode(AnidbApiException):
+    def __init__(self, *args, **kwargs):
+        self.code_expected = kwargs.pop('code_expected')
+        self.code_received = kwargs.pop('code_received')
+        if not args or not isinstance(args[0], str):
+            args = ["incorrect response code received"] + args
+        super().__init__(message, *args, **kwargs)
+    def __str__(self):
+        ogstr = super().__str__()
+        return f"{ogstr}: got {self.code_received}, expected {self.code_expected}"
+
+
 class AnidbResponse(object):
     CODE_LOGIN_FIRST = 501
+    CODE_RESULT_FILE = 220
 
     def __init__(self, code, data):
         self.code = code
@@ -39,7 +53,7 @@ class AnidbResponse(object):
         if len(parts) == 2:
             inst.extended = parts[0]
             inst.body = parts[1]
-            print(f"inst.body={inst.body}")
+            print(f"inst.body={inst.body!r}")
             #if not inst.body.endswith("\n"):
             #    raise RuntimeError('Truncated')
         return inst
@@ -58,15 +72,23 @@ class AnidbResponse(object):
         keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
         return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
-    def decode_with_query(self, query):
+    def decode_with_query(self, query, *, suppress_truncation_error=False):
+        if hasattr(query, 'validate_response_has_valid_code'):
+            query.validate_response_has_valid_code(self)
+        else:
+            warnings.warn("query without validate_response_has_valid_code", DeprecationWarning)
         parsed = parse_data(self.body)
-        if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
-            raise RuntimeError(f'Truncated: {len(parsed)} != {len(query.IMPLICIT_FIELDS) + len(query.fields)}')
+        if not suppress_truncation_error:
+            if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
+                raise RuntimeError(f'Truncated: {len(parsed)} != {len(query.IMPLICIT_FIELDS) + len(query.fields)}')
         out = {}
-        for (k, v) in zip(query.IMPLICIT_FIELDS, parsed):
-            out[k] = v
+        for ((k, kt), v) in zip(query.IMPLICIT_FIELDS, parsed):
+            out[k] = deserialize_field(kt, v)
         for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):]):
-            out[f.name] = f.filter_value(v)
+            try:
+                out[f.name] = f.filter_value(v)
+            except Exception as e:
+                raise RuntimeError(f"invalid field {f.name!r}", e)
         self.decoded = out
 
     def __getitem__(self, name):
@@ -79,7 +101,7 @@ class AnidbResponse(object):
 
 class AnidbApiCall(object):
     def field_names(self):
-        return self.IMPLICIT_FIELDS + [f.name for f in self.fields]
+        return self.IMPLICIT_FIELDS[0] + [f.name for f in self.fields]
 
 
 class MaskField(object):
@@ -102,8 +124,19 @@ class MaskField(object):
         return self.to_sort_tuple() > other.to_sort_tuple()
 
 
-class FileRequest(AnidbApiCall, namedtuple('_FileRequest', ['size', 'ed2k', 'fields'])):
-    IMPLICIT_FIELDS = ['fid']
+class FileRequest(AnidbApiCall):
+    IMPLICIT_FIELDS = [('fid', int)]
+    def __init__(self, *, fields, key=None, size=None, ed2k=None, fid=None):
+        self.fields = fields
+        if key:
+            self.key = key
+        elif fid:
+            self.key = [('fid', fid)]
+        elif size and ed2k:
+            self.key = [('size', size), ('ed2k', ed2k)]
+        else:
+            raise Exception("bad key - neither fid, size or ed2k specified")
+
     def serialize(self):
         fmask = 0
         amask = 0
@@ -112,7 +145,34 @@ class FileRequest(AnidbApiCall, namedtuple('_FileRequest', ['size', 'ed2k', 'fie
                 fmask |= f.to_bitfield()
             if isinstance(f, FileAmaskField):
                 amask |= f.to_bitfield()
-        return f"FILE size={self.size}&ed2k={self.ed2k}&fmask={fmask:010X}&amask={amask:08X}"
+        keystr = '&'.join(f'{k}={v}' for (k, v) in self.key)
+        return f"FILE {keystr}&fmask={fmask:010X}&amask={amask:08X}"
+
+    def validate_response_has_valid_code(self, response):
+        if response.code != AnidbResponse.CODE_RESULT_FILE:
+            raise AnidbApiBadCode("bad code for FILE",
+                code_expected=AnidbResponse.CODE_RESULT_FILE,
+                code_received=response.code)
+
+    def next_request(self, response):
+        unfilled = []
+        response.decode_with_query(self, suppress_truncation_error=True)
+        for f in self.fields:
+            if response.decoded is None or f.name not in response.decoded:
+                unfilled.append(f)
+        if not unfilled:
+            return None
+        if 'fid' in response.decoded:
+            return FileRequest(fid=response.decoded['fid'], fields=unfilled)
+        return FileRequest(key=self.key, fields=unfilled)
+
+    def _repr_fields(self):
+        yield ('key', self.key)
+        yield ('fields', self.fields)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
 
 class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte', 'bit'])):
@@ -225,15 +285,7 @@ class FileFmaskField(MaskField):
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
 
     def filter_value(self, field_value):
-        if self.pytype is None:
-            return field_value
-        if self.pytype is str:
-            return field_value
-        if self.pytype == int:
-            return int(field_value)
-        if self.pytype == datetime:
-            return datetime.fromtimestamp(int(field_value))
-        return field_value
+        return deserialize_field(self.pytype, field_value)
 
     def to_bitfield(self):
         return 1 << 8 * (self.BYTE_LENGTH - self.byte) + self.bit
@@ -250,6 +302,28 @@ class FileFmaskField(MaskField):
                         v = FileFmaskField(byi + 1, bii, f"unk{chk:08x}", None)
                     analyzed.append(v)
         return analyzed
+
+
+def deserialize_field(pytype, field_value):
+    if pytype is None:
+        return field_value
+    if hasattr(pytype, 'deserialize'):
+        return pytype.deserialize(field_value)
+    if pytype is str:
+        return field_value
+    if pytype == int:
+        return int(field_value)
+    if pytype == datetime:
+        return datetime.fromtimestamp(int(field_value))
+    return field_value
+
+
+class ListOf:
+    def __init__(self, type):
+        self._type = type
+
+    def deserialize(self, data):
+        return list(deserialize_field(self._type, x) for x in data.split('§'))
 
 
 FileFmaskField.register_all([
@@ -273,8 +347,8 @@ FileFmaskField.register_all([
 
     FileFmaskField(3, 7, 'quality', str),
     FileFmaskField(3, 6, 'source', str),
-    FileFmaskField(3, 5, 'audio_codec', str),  # was: audio_codec_list
-    FileFmaskField(3, 4, 'audio_bitrate', int),  # was: audio_bitrate_list
+    FileFmaskField(3, 5, 'audio_codec', ListOf(str)),  # was: audio_codec_list
+    FileFmaskField(3, 4, 'audio_bitrate', ListOf(int)),  # was: audio_bitrate_list
     FileFmaskField(3, 3, 'video_codec', str),
     FileFmaskField(3, 2, 'video_bitrate', int),
     FileFmaskField(3, 1, 'resolution', str),  # was: video_resolution

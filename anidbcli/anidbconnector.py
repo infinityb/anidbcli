@@ -1,3 +1,4 @@
+import warnings
 import socket
 import hashlib
 import time
@@ -12,6 +13,7 @@ API_PORT = 9000
 SOCKET_TIMEOUT = 5
 MAX_RECEIVE_SIZE = 65507 # Max size of an UDP packet is about 1400B anyway
 RETRY_COUNT = 3
+REQUEST_CONVERGE_MAX_COUNT = 5
 
 API_ENDPOINT_ENCRYPT = "ENCRYPT user=%s&type=1"
 API_ENDPOINT_LOGIN = "AUTH user=%s&pass=%s&protover=3&client=anidbcli&clientver=1&enc=UTF8"
@@ -42,16 +44,22 @@ class AnidbConnector:
         self._persistent = bool(persistent)
         self._salt = salt
         self._session = session
-        self._bind_addr = tuple(bind_addr)
+        self._bind_addr = None
+        if bind_addr:
+            self._bind_addr = tuple(bind_addr)
 
         if self._persistent:
             self._load_persistence()
-        if (salt and api_key) and not session:
+        if self._salt and api_key:
+            if not self._session:
+                # TODO: we need to tell the server we're starting encryption?
+                # need revalidation for code CFG vs server flow.
+                pass
             # if we have a session, assume we're already encryption-enabled?  We'd have to
             # store state telling us whether or not we sent the encrypt packet yet in the persistence file.
             md5 = hashlib.md5(bytes(api_key + salt, "ascii"))
             instance._crypto = encryptors.Aes128TextEncryptor(md5.digest())
-            # TODO: we need to tell the server we're starting encryption.
+
         self._initialize_socket()
 
     def _load_persistence(self):
@@ -66,9 +74,9 @@ class AnidbConnector:
 
     def _initialize_socket(self):
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        if bind_addr:
+        if self._bind_addr:
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._socket.bind(tuple(bind_addr))
+            self._socket.bind(self._bind_addr)
         remote_addr = (socket.gethostbyname_ex(API_ADDRESS)[2][0], API_PORT)
         self._socket.connect(remote_addr)
         self._socket.settimeout(SOCKET_TIMEOUT)
@@ -81,7 +89,7 @@ class AnidbConnector:
     @classmethod
     def create_plain(cls, username, password):
         """Creates unencrypted UDP API connection using the provided credenitals."""
-        return cls((username, passord))
+        return cls((username, password))
 
     # @classmethod
     # def create_secure(cls, username, password, api_key):
@@ -120,8 +128,9 @@ class AnidbConnector:
         (username, password) = self._credentials
         response = self._send_request_raw(API_ENDPOINT_LOGIN % (username, password))
         if response.code == LOGIN_ACCEPTED or response.code == LOGIN_ACCEPTED_NEW_VERSION_AVAILABLE:
-            self._session = response.data.split(" ")[0]
+            self._session = response.data.split(' ', 1)[0]
             if self._persistent:
+                # TODO: write persistence file
                 pass
         else:
             raise Exception(response.data)
@@ -158,14 +167,8 @@ class AnidbConnector:
     #             pass
     #         self._send_request_raw(API_ENDPOINT_LOGOUT % self._session)
     #     self._socket.close()
-
-
-    def send_request(self, content):
+    def send_request_helper_legacy(self, content):
         """Sends request to the API and returns a dictionary containing response code and data."""
-        original_content = content
-        if isinstance(original_content, AnidbApiCall):
-            content = original_content.serialize()
-
         tries = RETRY_COUNT
         while 0 < tries:
             if not self._session:
@@ -181,3 +184,42 @@ class AnidbConnector:
                     raise
                 else:
                     continue
+
+    # def send_request_helper2(self, request):
+    #     """Sends request to the API and returns a dictionary containing response code and data."""
+    #     original_request = request
+    #     request.decoded = {}
+    #     converge_ct = REQUEST_CONVERGE_MAX_COUNT
+    #     return AnidbResponse()
+    #     while 0 < converge_ct and request:
+    #         converge_ct -= 1
+    #         if not request:
+    #             break
+    #         if not self._session:
+    #             self._login()
+
+    #         content = request.serialize()
+    #         try:
+    #             res = self._send_request_raw(f"{content}&s={self._session}")
+    #         except socket.timeout:
+    #             if converge_ct == 0:
+    #                 raise
+    #             else:
+    #                 continue
+
+    #         if response.code == AnidbResponse.CODE_BANNED:
+    #             raise AnidbApiBanned(response.decode('utf-8'))
+    #         if response.code == AnidbResponse.CODE_LOGIN_FIRST:
+    #             self._session = None
+    #             continue
+    #         request = request.next_request(res)
+    #         request.decoded.update(res.decoded)
+    #     return
+
+    def send_request(self, content):
+        if isinstance(content, AnidbApiCall):
+            # if hasattr(content, 'next_request'):
+            #     return self.send_request_helper2(content)
+            return self.send_request_helper_legacy(content.serialize())
+        else:
+            return self.send_request_helper_legacy(content)

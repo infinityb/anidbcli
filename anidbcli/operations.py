@@ -23,9 +23,12 @@ RESULT_ALREADY_IN_MYLIST = 310
 def IsNullOrWhitespace(s):
         return s is None or s.isspace() or s == ""
 
+
 class Operation:
     @abstractmethod
-    def Process(self, file): pass
+    def Process(self, file):
+        pass
+
 
 class MylistAddOperation(Operation):
     def __init__(self, connector, output, state, unwatched):
@@ -36,6 +39,7 @@ class MylistAddOperation(Operation):
             self.viewed = 0
         else:
             self.viewed = 1
+
     def Process(self, file):
         try:
             res = self.connector.send_request(API_ENDPOINT_MYLYST_ADD % (file["size"], file["ed2k"], self.viewed, int(self.state)))
@@ -55,10 +59,12 @@ class MylistAddOperation(Operation):
 
         return True
 
+
 class HashOperation(Operation):
     def __init__(self, output, show_ed2k):
         self.output = output
         self.show_ed2k = show_ed2k
+
     def Process(self, file):
         try:
             link = libed2k.hash_file(file["path"])
@@ -80,7 +86,7 @@ class GetFileInfoOperation(Operation):
 
 
     def Process(self, file):
-        request = FileRequest(file['size'], file['ed2k'], fields=[
+        request = FileRequest(size=file['size'], ed2k=file['ed2k'], fields=[
             FileFmaskField.f.aid,
             FileFmaskField.f.eid,
             FileFmaskField.f.gid,
@@ -122,66 +128,25 @@ class GetFileInfoOperation(Operation):
             FileAmaskField.f.g_name,
             FileAmaskField.f.g_sname,
         ])
-        request_anime_only = FileRequest(file['size'], file['ed2k'], fields=[
-            FileAmaskField.f.ep_total,
-            FileAmaskField.f.ep_last,
-            FileAmaskField.f.year,
-            FileAmaskField.f.a_type,
-            FileAmaskField.f.a_romaji,
-            FileAmaskField.f.a_kanji,
-            FileAmaskField.f.a_english,
-            FileAmaskField.f.a_other,
-            FileAmaskField.f.a_short,
-            FileAmaskField.f.a_synonyms,
-            FileAmaskField.f.ep_no,
-            FileAmaskField.f.ep_english,
-            FileAmaskField.f.ep_romaji,
-            FileAmaskField.f.ep_kanji,
-            FileAmaskField.f.g_name,
-            FileAmaskField.f.g_sname,
-        ])
-
-        try:
-            res = self.connector.send_request(request)
-        except Exception as e:
-            self.output.error(f"Failed to get file info: {e}")
-            return False
-        if res.code != RESULT_FILE:
-            self.output.error(f"Failed to get file info: {res!r}")
-            return False
-        parsed = parse_data(res.body)
 
         fileinfo = {}
-        need_anime_request = False
-        if len(parsed) < len(request.field_names()):
-            need_anime_request = True
-            parsed = parsed[:25]
-        for (k, v) in zip(request.field_names(), parsed):
-            if k == 'aired':
-                fileinfo[k] = datetime.datetime.fromtimestamp(int(v))
-            else:
-                fileinfo[k] = v
-        if need_anime_request:
+        request_split_max = 2
+        while 0 < request_split_max and request:
+            request_split_max -= 1
+            if not request:
+                break
             try:
-                res = self.connector.send_request(request_anime_only)
-                parsed = parse_data(res.body)
+                res = self.connector.send_request(request)
             except Exception as e:
                 self.output.error(f"Failed to get file info: {e}")
                 return False
             if res.code != RESULT_FILE:
                 self.output.error(f"Failed to get file info: {res!r}")
                 return False
-            for (k, v) in zip(request_anime_only.field_names(), parsed):
-                fileinfo[k] = v
-
-        if not need_anime_request:
-            res.decode_with_query(request)
-            differences = [(k, res.decoded.get(k, None), fileinfo.get(k, None))
-                for k in (fileinfo.keys() | res.decoded.keys())
-                if res.decoded.get(k, None) != fileinfo.get(k, None)
-            ]
-            if differences:
-                self.output.error(f"Decode differences: {differences!r}")
+            print(f"processing {res!r} -<- {request!r}")
+            res.decode_with_query(request, suppress_truncation_error=True)
+            fileinfo.update(res.decoded)
+            request = request.next_request(res)
 
         fileinfo["version"] = ""
         fileinfo["censored"] = ""
@@ -249,13 +214,15 @@ class RenameOperation(Operation):
                 else:
                     shutil.move(f, tmp_tgt + file_extension)
                     self.output.success(f"File renamed to: {tmp_tgt + file_extension!r}")
-            except:
-                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}")
+            except RuntimeError as e:
+                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}: {e}")
         if self.delete_empty and len(os.listdir(os.path.dirname(file["path"]))) == 0:
             os.removedirs(os.path.dirname(file["path"]))
         file["path"] = target + base_ext
 
+
 def filename_friendly(input):
+    input = f"{input}"
     replace_with_space = ["<", ">", "/", "\\", "*", "|"]
     for i in replace_with_space:
         input = input.replace(i, " ")
