@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+import sys
 import os
 import datetime
 import re
@@ -7,14 +8,14 @@ import glob
 import errno
 import time
 import shutil
+import traceback
 
 import anidbcli.libed2k as libed2k 
-from anidbcli.protocol import parse_data, FileAmaskField, FileFmaskField, FileRequest
+from anidbcli.protocol import parse_data, FileAmaskField, FileFmaskField, FileRequest, AnidbResponse
 
 API_ENDPOINT_MYLYST_ADD = "MYLISTADD size=%d&ed2k=%s&viewed=%d&state=%s"
 API_ENDPOINT_MYLYST_EDIT = "MYLISTADD size=%d&ed2k=%s&edit=1&viewed=%d&state=%s"
 
-RESULT_FILE = 220
 RESULT_MYLIST_ENTRY_ADDED = 210
 RESULT_MYLIST_ENTRY_EDITED = 311
 RESULT_ALREADY_IN_MYLIST = 310
@@ -26,7 +27,7 @@ def IsNullOrWhitespace(s):
 
 class Operation:
     @abstractmethod
-    def Process(self, file):
+    def __call__(self, file):
         pass
 
 
@@ -40,7 +41,7 @@ class MylistAddOperation(Operation):
         else:
             self.viewed = 1
 
-    def Process(self, file):
+    def __call__(self, file):
         try:
             res = self.connector.send_request(API_ENDPOINT_MYLYST_ADD % (file["size"], file["ed2k"], self.viewed, int(self.state)))
             if res.code == RESULT_MYLIST_ENTRY_ADDED:
@@ -60,23 +61,26 @@ class MylistAddOperation(Operation):
         return True
 
 
+def hash_operation_factory(output, show_ed2k):
+    def hash_operation(file):
+        try:
+            file['ed2k'] = libed2k.hash_file(file["file_path"])
+            file['size'] = os.path.getsize(file["file_path"])
+            if show_ed2k:
+                output.info("{!r} was hashed: {}".format(file['file_path'], file['ed2k']))
+            return True
+        except Exception as e:
+            output.error('Failed to generate hash for {!r}: {}'.format(file['file_path'], e))
+            return False
+
+    return hash_operation
+
+
 class HashOperation(Operation):
     def __init__(self, output, show_ed2k):
-        self.output = output
-        self.show_ed2k = show_ed2k
-
-    def Process(self, file):
-        try:
-            link = libed2k.hash_file(file["path"])
-        except Exception as e:
-            self.output.error("Failed to generate hash: " + str(e))
-            return False
-        file["ed2k"] = link
-        file["size"] = os.path.getsize(file["path"])
-        self.output.success("Generated ed2k link.")
-        if self.show_ed2k:
-            self.output.info(libed2k.get_ed2k_link(file["path"], file["ed2k"]))
-        return True
+        self._callable = hash_operation_factory(output, show_ed2k)
+    def __call__(self, file):
+        return self._callable(file)
 
 
 class GetFileInfoOperation(Operation):
@@ -84,9 +88,13 @@ class GetFileInfoOperation(Operation):
         self.connector = connector
         self.output = output
 
-
-    def Process(self, file):
-        request = FileRequest(size=file['size'], ed2k=file['ed2k'], fields=[
+    def __call__(self, file):
+        ed2k = file['ed2k']
+        size = file['size']
+        if self.connector.check_negative_cache(file):
+            self.output.error(f"{ed2k}:{size} is present in negative, skipped")
+            return False
+        request = FileRequest(size=size, ed2k=ed2k, fields=[
             FileFmaskField.f.aid,
             FileFmaskField.f.eid,
             FileFmaskField.f.gid,
@@ -139,12 +147,13 @@ class GetFileInfoOperation(Operation):
                 res = self.connector.send_request(request)
             except Exception as e:
                 self.output.error(f"Failed to get file info: {e}")
+                print(traceback.format_exc(), file=sys.stderr)
                 return False
-            if res.code != RESULT_FILE:
+            if res.code != AnidbResponse.CODE_RESULT_FILE:
                 self.output.error(f"Failed to get file info: {res!r}")
                 return False
             print(f"processing {res!r} -<- {request!r}")
-            res.decode_with_query(request, suppress_truncation_error=True)
+            # res.decode_with_query(request, suppress_truncation_error=True)
             fileinfo.update(res.decoded)
             request = request.next_request(res)
 
@@ -168,6 +177,7 @@ class GetFileInfoOperation(Operation):
         self.output.success("Successfully grabbed file info.")
         return True
 
+
 class RenameOperation(Operation):
     def __init__(self, output, target_path, date_format, delete_empty, keep_structure, soft_link, hard_link, abort):
         self.output = output
@@ -178,7 +188,7 @@ class RenameOperation(Operation):
         self.soft_link = soft_link
         self.hard_link = hard_link
         self.abort = abort
-    def Process(self, file):
+    def __call__(self, file):
         try:
             file["info"]["aired"] = file["info"]["aired"].strftime(self.date_format)
         except:
@@ -194,7 +204,7 @@ class RenameOperation(Operation):
                 return
             target = target.replace("%"+tag+"%", filename_friendly(file["info"][tag])) # Remove path invalid characters
         target = ' '.join(target.split())  # Replace multiple whitespaces with one
-        filename, base_ext = os.path.splitext(file["path"])
+        filename, base_ext = os.path.splitext(file["file_path"])
         for f in glob.glob(glob.escape(filename) + "*"): # Find subtitle files
             try:
                 tmp_tgt = target
@@ -214,11 +224,11 @@ class RenameOperation(Operation):
                 else:
                     shutil.move(f, tmp_tgt + file_extension)
                     self.output.success(f"File renamed to: {tmp_tgt + file_extension!r}")
-            except RuntimeError as e:
+            except (OSError, RuntimeError) as e:
                 self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}: {e}")
-        if self.delete_empty and len(os.listdir(os.path.dirname(file["path"]))) == 0:
-            os.removedirs(os.path.dirname(file["path"]))
-        file["path"] = target + base_ext
+        if self.delete_empty and len(os.listdir(os.path.dirname(file["file_path"]))) == 0:
+            os.removedirs(os.path.dirname(file["file_path"]))
+        file["file_path"] = target + base_ext
 
 
 def filename_friendly(input):

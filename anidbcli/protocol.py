@@ -36,13 +36,14 @@ class AnidbApiBadCode(AnidbApiException):
 class AnidbResponse(object):
     CODE_LOGIN_FIRST = 501
     CODE_RESULT_FILE = 220
+    CODE_RESULT_NO_SUCH_FILE = 320
 
-    def __init__(self, code, data):
+    def __init__(self, code, data, *, extended=None, body=None, decoded=None):
         self.code = code
         self.data = data
-        self.extended = None
-        self.body = None
-        self.decoded = None
+        self.extended = extended
+        self.body = body
+        self.decoded = decoded
 
     @classmethod
     def parse(cls, binary):
@@ -72,7 +73,21 @@ class AnidbResponse(object):
         keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
         return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
+    def iter_raw_kv(self, query, *, suppress_truncation_error=False):
+        if hasattr(query, 'validate_response_has_valid_code'):
+            query.validate_response_has_valid_code(self)
+        else:
+            warnings.warn("query without validate_response_has_valid_code", DeprecationWarning)
+        parsed = parse_data(self.body)
+        if not suppress_truncation_error:
+            if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
+                raise RuntimeError(f'Truncated: {len(parsed)} != {len(query.IMPLICIT_FIELDS) + len(query.fields)}')
+        for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):]):
+            yield f, v
+
     def decode_with_query(self, query, *, suppress_truncation_error=False):
+        if self.decoded is not None:
+            return
         if hasattr(query, 'validate_response_has_valid_code'):
             query.validate_response_has_valid_code(self)
         else:
@@ -84,11 +99,8 @@ class AnidbResponse(object):
         out = {}
         for ((k, kt), v) in zip(query.IMPLICIT_FIELDS, parsed):
             out[k] = deserialize_field(kt, v)
-        for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):]):
-            try:
-                out[f.name] = f.filter_value(v)
-            except Exception as e:
-                raise RuntimeError(f"invalid field {f.name!r}", e)
+        for (f, v) in self.iter_raw_kv(query, suppress_truncation_error=suppress_truncation_error):
+            out[f.name] = f.filter_value(v)
         self.decoded = out
 
     def __getitem__(self, name):
@@ -124,6 +136,20 @@ class MaskField(object):
         return self.to_sort_tuple() > other.to_sort_tuple()
 
 
+class FileKeyED2K(object):
+    def __init__(self, ed2k, size):
+        self.ed2k = ed2k
+        self.size = size
+
+
+class FileKeyFID(object):
+    def __init__(self, fid):
+        self.fid = fid
+
+    def __str__(self):
+        return 'f{}'.format(self.fid)
+
+
 class FileRequest(AnidbApiCall):
     IMPLICIT_FIELDS = [('fid', int)]
     def __init__(self, *, fields, key=None, size=None, ed2k=None, fid=None):
@@ -136,6 +162,22 @@ class FileRequest(AnidbApiCall):
             self.key = [('size', size), ('ed2k', ed2k)]
         else:
             raise Exception("bad key - neither fid, size or ed2k specified")
+
+    def construct_hash_key(self):
+        found_hash_element_ed2k = None
+        found_hash_element_size = None
+        for (k, v) in self.key:
+            if k == 'fid':
+                return False
+            if k == 'ed2k':
+                found_hash_element_ed2k = v
+            if k == 'size':
+                found_hash_element_size = v
+        if found_hash_element_ed2k is None:
+            return None
+        if found_hash_element_size is None:
+            return None
+        return FileKeyED2K(found_hash_element_ed2k, found_hash_element_size)
 
     def serialize(self):
         fmask = 0
@@ -182,6 +224,9 @@ class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte',
 
     def to_sort_tuple(self):
         return (0, 0, self.byte, 7 - self.bit)
+
+    def __hash__(self):
+        return hash((type(self), self.name))
 
     @classmethod
     def register_all(cls, values):
@@ -273,6 +318,9 @@ class FileFmaskField(MaskField):
         self.name = name
         self.pytype = pytype
 
+    def __hash__(self):
+        return hash((type(self), self.name))
+
     def to_sort_tuple(self):
         return (1, 0, self.byte, 7 - self.bit)
 
@@ -289,6 +337,7 @@ class FileFmaskField(MaskField):
 
     def to_bitfield(self):
         return 1 << 8 * (self.BYTE_LENGTH - self.byte) + self.bit
+
 
     @classmethod
     def analyze(cls, mask):
@@ -374,12 +423,15 @@ FileFmaskField.register_all([
 ]);
 
 
-class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'name'])):
+class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'name' ,'pytype'])):
     KNOWN_FIELDS = []
     BIT_POSITION_LOOKUP = {}
     f = type(object)('FileAmaskFieldHolder', (), {})
     def to_sort_tuple(self):
         return (1, 1, self.byte, 7 - self.bit)
+
+    def __hash__(self):
+        return hash((type(self), self.name))
 
     @classmethod
     def register_all(cls, values):
@@ -390,7 +442,7 @@ class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'n
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
 
     def filter_value(self, field_value):
-        return field_value
+        return deserialize_field(self.pytype, field_value)
 
     def to_bitfield(self):
         return 1 << 8 * (4 - self.byte) + self.bit
@@ -410,30 +462,30 @@ class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'n
 
 
 FileAmaskField.register_all([
-    FileAmaskField(1, 7, 'ep_total'),  # was: anime_total_episodes
-    FileAmaskField(1, 6, 'ep_last'),  # was: highest_episode_number
-    FileAmaskField(1, 5, 'year'),
-    FileAmaskField(1, 4, 'a_type'),  # was: type
-    FileAmaskField(1, 3, 'related_aid_list'),
-    FileAmaskField(1, 2, 'related_aid_type'),
-    FileAmaskField(1, 1, 'a_categories'),  # was category_list
+    FileAmaskField(1, 7, 'ep_total', None),  # was: anime_total_episodes
+    FileAmaskField(1, 6, 'ep_last', None),  # was: highest_episode_number
+    FileAmaskField(1, 5, 'year', None),
+    FileAmaskField(1, 4, 'a_type', None),  # was: type
+    FileAmaskField(1, 3, 'related_aid_list', None),
+    FileAmaskField(1, 2, 'related_aid_type', None),
+    FileAmaskField(1, 1, 'a_categories', None),  # was category_list
 
-    FileAmaskField(2, 7, 'a_romaji'),  # was: romaji_name
-    FileAmaskField(2, 6, 'a_kanji'),  # was: kanji_name
-    FileAmaskField(2, 5, 'a_english'),  # was: english_name
-    FileAmaskField(2, 4, 'a_other'),  # was: other_name
-    FileAmaskField(2, 3, 'a_short'),  # was: short_name_list
-    FileAmaskField(2, 2, 'a_synonyms'),  # was: synonym_list
+    FileAmaskField(2, 7, 'a_romaji', None),  # was: romaji_name
+    FileAmaskField(2, 6, 'a_kanji', None),  # was: kanji_name
+    FileAmaskField(2, 5, 'a_english', None),  # was: english_name
+    FileAmaskField(2, 4, 'a_other', ListOf(str)),  # was: other_name
+    FileAmaskField(2, 3, 'a_short', ListOf(str)),  # was: short_name_list
+    FileAmaskField(2, 2, 'a_synonyms', ListOf(str)),  # was: synonym_list
 
-    FileAmaskField(3, 7, 'ep_no'),  # was: epno
-    FileAmaskField(3, 6, 'ep_english'),  # was: ep_name
-    FileAmaskField(3, 5, 'ep_romaji'),  # was: ep_romaji_name
-    FileAmaskField(3, 4, 'ep_kanji'),  # was: ep_kanji_name
-    FileAmaskField(3, 3, 'episode_rating'),
-    FileAmaskField(3, 2, 'episode_vote_count'),
+    FileAmaskField(3, 7, 'ep_no', None),  # was: epno
+    FileAmaskField(3, 6, 'ep_english', None),  # was: ep_name
+    FileAmaskField(3, 5, 'ep_romaji', None),  # was: ep_romaji_name
+    FileAmaskField(3, 4, 'ep_kanji', None),  # was: ep_kanji_name
+    FileAmaskField(3, 3, 'episode_rating', None),
+    FileAmaskField(3, 2, 'episode_vote_count', None),
 
-    FileAmaskField(4, 7, 'g_name'),  # was: group_name
-    FileAmaskField(4, 6, 'g_sname'),  # was: group_short_name
-    FileAmaskField(4, 0, 'date_aid_record_updated'),
+    FileAmaskField(4, 7, 'g_name', None),  # was: group_name
+    FileAmaskField(4, 6, 'g_sname', None),  # was: group_short_name
+    FileAmaskField(4, 0, 'date_aid_record_updated', None),
 ])
 

@@ -1,12 +1,14 @@
 import click
 import os
 import time
+import sys
 import json
 import pyperclip
 import anidbcli.libed2k as libed2k
 import anidbcli.anidbconnector as anidbconnector
 import anidbcli.output as output
 import anidbcli.operations as operations
+import traceback
 
 @click.group(name="anidbcli")
 @click.version_option(version="1.66", prog_name="anidbcli")
@@ -47,6 +49,7 @@ def ed2k(ctx , files, clipboard):
 @click.option('--username', "-u", prompt=True)
 @click.option('--password', "-p", prompt=True, hide_input=True)
 @click.option('--apikey', "-k")
+@click.option("--api2", "-2", is_flag=True, default=False, help="Use new implementation")
 @click.option("--add", "-a", is_flag=True, default=False, help="Add files to mylist.")
 @click.option("--unwatched", "-U", is_flag=True, default=False, help="Add files to mylist as unwatched. Use with -a flag.")
 @click.option("--rename", "-r",  default=None, help="Rename the files according to provided format. See documentation for more info.")
@@ -61,8 +64,10 @@ def ed2k(ctx , files, clipboard):
 @click.option("--show-ed2k", default=False, is_flag=True, help="Show ed2k link of processed file (while adding or renaming files).")
 @click.argument("files", nargs=-1, type=click.Path(exists=True))
 @click.pass_context
-def api(ctx, username, password, apikey, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k):
-    if (not add and not rename):
+def api(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k):
+    if api2:
+        return api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k)
+    if not add and not rename:
         ctx.obj["output"].info("Nothing to do.")
         return
     try:
@@ -85,7 +90,84 @@ def api(ctx, username, password, apikey, add, unwatched, rename, files, keep_str
         ctx.obj["output"].info("Processing file \"" + file +"\"")
 
         for operation in pipeline:
-            res = operation.Process(file_obj)
+            res = operation(file_obj)
+            if not res: # Critical error, cannot proceed with pipeline
+                break
+    conn.close()
+
+
+def api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k):
+    if not rename:
+        ctx.obj["output"].info("Nothing to do.")
+        return
+    conn = get_connector(apikey, username, password, persistent)
+    linkhive_base_path = '/storage/metameta/anime-links-by-ed2k'
+    scan_exempt = set()
+    known_keys = set()
+    with os.scandir(linkhive_base_path) as scan:
+        for entry in scan:
+            parts = entry.name.split('-', 2)
+            if len(parts) != 2:
+                continue
+            try:
+                link_target = os.readlink(entry.path)
+            except OSError as e:
+                if e.errno == errno.EINVAL:
+                    continue
+                else:
+                    raise
+            (ed2k, size) = parts
+            size = int(size, 16)
+            known_keys.add((ed2k, size))
+            scan_exempt.add(link_target)
+
+    def check_exemption(file):
+        if file['path'] in scan_exempt:
+            return False
+        return True
+
+    def rewrite_hive_path(file):
+        fid_natural_key = (file['ed2k'], file['size'])
+        linkhive_path = os.path.join(linkhive_base_path, f'{fid_natural_key[0]:>032}-{fid_natural_key[1]:016x}')
+        
+        link_is_in_hive = fid_natural_key in known_keys
+        link_is_self_target = False
+        if link_is_in_hive:
+            link_target = os.readlink(linkhive_path)
+
+            # cleans up broken link
+            if os.path.lexists(link_target) and not os.path.exists(link_target):
+                os.unlink(link_target)
+                link_is_in_hive = False
+            if link_is_in_hive:
+                link_is_self_target = link_target == file['path']
+        if not link_is_in_hive:
+            file['path'] = linkhive_path
+            os.symlink(file_path, linkhive_path)
+            link_is_self_target = True
+        return link_is_self_target
+
+    pipeline = []
+    pipeline.append(check_exemption)
+    pipeline.append(operations.hash_operation_factory(ctx.obj["output"], show_ed2k))
+    pipeline.append(operations.GetFileInfoOperation(conn, ctx.obj["output"]))
+    pipeline.append(rewrite_hive_path)
+    pipeline.append(operations.RenameOperation(ctx.obj["output"], rename, date_format, delete_empty, keep_structure, softlink, link, abort))
+
+    to_process = get_files_to_process(files, ctx)
+    for file_path in to_process:
+        file_obj = {}
+        file_obj["path"] = file_path
+        file_obj["file_path"] = file_path
+        ctx.obj["output"].info(f"Processing file {file_path!r}")
+        
+        for operation in pipeline:
+            try:
+                res = operation(file_obj)
+            except Exception as e:
+                ctx.obj["output"].error(f"error running {operation!r} on {file_obj['path']!r}: {e}")
+                print(traceback.format_exc(), file=sys.stderr)
+                break
             if not res: # Critical error, cannot proceed with pipeline
                 break
     conn.close()
