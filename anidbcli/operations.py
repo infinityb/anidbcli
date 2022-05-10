@@ -67,10 +67,13 @@ def hash_operation_factory(output, show_ed2k):
             file['ed2k'] = libed2k.hash_file(file["file_path"])
             file['size'] = os.path.getsize(file["file_path"])
             if show_ed2k:
-                output.info("{!r} was hashed: {}".format(file['file_path'], file['ed2k']))
+                if 'file_path' in file:
+                    output.info("{!r} was hashed: {}".format(file['file_path'], file['ed2k']))
+                else:
+                    output.info("file={!r} was hashed: {}".format(file, file['ed2k']))
             return True
         except Exception as e:
-            output.error('Failed to generate hash for {!r}: {}'.format(file['file_path'], e))
+            output.error('Failed to generate hash for {!r}: {}'.format(file, e))
             return False
 
     return hash_operation
@@ -216,8 +219,19 @@ class RenameOperation(Operation):
                 except:
                     pass
                 if self.soft_link:
-                    os.symlink(f, tmp_tgt + file_extension)
-                    self.output.success(f"Created soft link: {tmp_tgt + file_extension!r}")
+                    msg_prefix = "Created soft link"
+                    verify_link_required = True
+                    try:
+                        os.symlink(f, tmp_tgt + file_extension)
+                        verify_link_required = False
+                    except Exception as e:
+                        if e.errno != errno.EEXIST:
+                            raise
+                    if verify_link_required:
+                        if os.readlink(tmp_tgt + file_extension) != file["file_path"]:
+                            raise RuntimeError("symlinking failed and destination doesn't match source")
+                        msg_prefix = "Reused existing symlink"
+                    self.output.success(f"{msg_prefix}: {tmp_tgt + file_extension!r}")
                 elif self.hard_link:
                     os.link(f, tmp_tgt + file_extension)
                     self.output.success(f"Created hard link: {tmp_tgt + file_extension!r}")
@@ -225,7 +239,8 @@ class RenameOperation(Operation):
                     shutil.move(f, tmp_tgt + file_extension)
                     self.output.success(f"File renamed to: {tmp_tgt + file_extension!r}")
             except (OSError, RuntimeError) as e:
-                self.output.error(f"Failed to rename/link to: {tmp_tgt + file_extension!r}: {e}")
+                # {tmp_tgt + file_extension!r}:
+                self.output.error(f"Failed to rename/link to: {e}")
         if self.delete_empty and len(os.listdir(os.path.dirname(file["file_path"]))) == 0:
             os.removedirs(os.path.dirname(file["file_path"]))
         file["file_path"] = target + base_ext

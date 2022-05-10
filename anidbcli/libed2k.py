@@ -35,6 +35,7 @@ def hash_file(file_path, parallel=None):
         size = f.tell()
         f.seek(0, os.SEEK_SET)
         cpu_count = multiprocessing.cpu_count()
+        cpu_count = 1
         if cpu_count == 1 or size < (4 * CHUNK_SIZE):  # a guess, threads have spin-up cost.
             hashes = [md4_hash(i) for i in generator(f)]
         else:

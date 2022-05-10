@@ -86,7 +86,7 @@ def api(ctx, username, password, apikey, api2, add, unwatched, rename, files, ke
     to_process = get_files_to_process(files, ctx)
     for file in to_process:
         file_obj = {}
-        file_obj["path"] = file
+        file_obj["file_path"] = file
         ctx.obj["output"].info("Processing file \"" + file +"\"")
 
         for operation in pipeline:
@@ -143,15 +143,16 @@ def api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, file
                 link_is_self_target = link_target == file['path']
         if not link_is_in_hive:
             file['path'] = linkhive_path
+            file['file_path'] = linkhive_path
             os.symlink(file_path, linkhive_path)
             link_is_self_target = True
         return link_is_self_target
 
     pipeline = []
-    pipeline.append(check_exemption)
+    # pipeline.append(check_exemption)
     pipeline.append(operations.hash_operation_factory(ctx.obj["output"], show_ed2k))
     pipeline.append(operations.GetFileInfoOperation(conn, ctx.obj["output"]))
-    pipeline.append(rewrite_hive_path)
+    #pipeline.append(rewrite_hive_path)
     pipeline.append(operations.RenameOperation(ctx.obj["output"], rename, date_format, delete_empty, keep_structure, softlink, link, abort))
 
     to_process = get_files_to_process(files, ctx)
@@ -165,7 +166,10 @@ def api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, file
             try:
                 res = operation(file_obj)
             except Exception as e:
-                ctx.obj["output"].error(f"error running {operation!r} on {file_obj['path']!r}: {e}")
+                if 'file_path' in file_obj:
+                    ctx.obj["output"].error(f"error running {operation!r} on {file_obj['path']!r}: {e}")
+                else:
+                    ctx.obj["output"].error(f"error running {operation!r} on file_obj={file_obj!r}: {e}")
                 print(traceback.format_exc(), file=sys.stderr)
                 break
             if not res: # Critical error, cannot proceed with pipeline

@@ -27,10 +27,20 @@ class AnidbApiBadCode(AnidbApiException):
         self.code_received = kwargs.pop('code_received')
         if not args or not isinstance(args[0], str):
             args = ["incorrect response code received"] + args
-        super().__init__(message, *args, **kwargs)
+        super().__init__(*args, **kwargs)
+    
+    def _repr_fields(self):
+        if self.code_expected is not None:
+            yield ('code_expected', self.code_expected)
+        if self.code_received is not None:
+            yield ('code_received', self.code_received)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
+
     def __str__(self):
-        ogstr = super().__str__()
-        return f"{ogstr}: got {self.code_received}, expected {self.code_expected}"
+        return self.__repr__()
 
 
 class AnidbResponse(object):
@@ -79,10 +89,13 @@ class AnidbResponse(object):
         else:
             warnings.warn("query without validate_response_has_valid_code", DeprecationWarning)
         parsed = parse_data(self.body)
+        truncation_workaround = slice(None, None)
         if not suppress_truncation_error:
             if len(parsed) != len(query.IMPLICIT_FIELDS) + len(query.fields):
                 raise RuntimeError(f'Truncated: {len(parsed)} != {len(query.IMPLICIT_FIELDS) + len(query.fields)}')
-        for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):]):
+        else:
+            truncation_workaround = slice(None, len(parsed) - 1)
+        for (f, v) in zip(query.fields, parsed[len(query.IMPLICIT_FIELDS):][truncation_workaround]):
             yield f, v
 
     def decode_with_query(self, query, *, suppress_truncation_error=False):
@@ -141,6 +154,18 @@ class FileKeyED2K(object):
         self.ed2k = ed2k
         self.size = size
 
+    def anidb_props(self):
+        yield ('ed2k', self.ed2k)
+        yield ('size', self.size)
+
+    def _repr_fields(self):
+        yield ('ed2k', self.ed2k)
+        yield ('size', self.size)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
+
 
 class FileKeyFID(object):
     def __init__(self, fid):
@@ -149,35 +174,49 @@ class FileKeyFID(object):
     def __str__(self):
         return 'f{}'.format(self.fid)
 
+    def anidb_props(self):
+        yield ('fid', self.fid)
+
+    def _repr_fields(self):
+        yield ('fid', self.fid)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
+
 
 class FileRequest(AnidbApiCall):
     IMPLICIT_FIELDS = [('fid', int)]
     def __init__(self, *, fields, key=None, size=None, ed2k=None, fid=None):
         self.fields = fields
         if key:
+            assert (isinstance(key, FileKeyED2K) or isinstance(key, FileKeyFID))
             self.key = key
         elif fid:
-            self.key = [('fid', fid)]
+            assert isinstance(fid, int)
+            self.key = FileKeyFID(fid=fid)
         elif size and ed2k:
-            self.key = [('size', size), ('ed2k', ed2k)]
+            assert isinstance(ed2k, str)
+            assert isinstance(size, int)
+            self.key = FileKeyED2K(ed2k=ed2k, size=size)
         else:
             raise Exception("bad key - neither fid, size or ed2k specified")
 
-    def construct_hash_key(self):
-        found_hash_element_ed2k = None
-        found_hash_element_size = None
-        for (k, v) in self.key:
-            if k == 'fid':
-                return False
-            if k == 'ed2k':
-                found_hash_element_ed2k = v
-            if k == 'size':
-                found_hash_element_size = v
-        if found_hash_element_ed2k is None:
-            return None
-        if found_hash_element_size is None:
-            return None
-        return FileKeyED2K(found_hash_element_ed2k, found_hash_element_size)
+    # def construct_hash_key(self):
+    #     found_hash_element_ed2k = None
+    #     found_hash_element_size = None
+    #     for (k, v) in self.key:
+    #         if k == 'fid':
+    #             return FileKeyFID(v)
+    #         if k == 'ed2k':
+    #             found_hash_element_ed2k = v
+    #         if k == 'size':
+    #             found_hash_element_size = v
+    #     if found_hash_element_ed2k is None:
+    #         return None
+    #     if found_hash_element_size is None:
+    #         return None
+    #     return FileKeyED2K(found_hash_element_ed2k, found_hash_element_size)
 
     def serialize(self):
         fmask = 0
@@ -187,7 +226,7 @@ class FileRequest(AnidbApiCall):
                 fmask |= f.to_bitfield()
             if isinstance(f, FileAmaskField):
                 amask |= f.to_bitfield()
-        keystr = '&'.join(f'{k}={v}' for (k, v) in self.key)
+        keystr = '&'.join(f'{k}={v}' for (k, v) in self.key.anidb_props())
         return f"FILE {keystr}&fmask={fmask:010X}&amask={amask:08X}"
 
     def validate_response_has_valid_code(self, response):

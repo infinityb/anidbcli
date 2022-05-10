@@ -10,11 +10,11 @@ import sqlite3
 from collections import namedtuple
 
 import anidbcli.encryptors as encryptors
-from anidbcli.protocol import AnidbApiCall, AnidbApiBanned, AnidbResponse, FileKeyED2K, FileKeyFID
+from anidbcli.protocol import AnidbApiCall, AnidbApiBanned, AnidbResponse, FileKeyED2K, FileKeyFID, FileRequest
 
 API_ADDRESS = "api.anidb.net"
 API_PORT = 9000
-SOCKET_TIMEOUT = 5
+SOCKET_TIMEOUT = 10
 MAX_RECEIVE_SIZE = 65507 # Max size of an UDP packet is about 1400B anyway
 RETRY_COUNT = 3
 REQUEST_CONVERGE_MAX_COUNT = 5
@@ -88,7 +88,9 @@ class AnidbConnector:
                 expiration INTEGER
             );
             CREATE UNIQUE INDEX IF NOT EXISTS anidb_file_negative_cache_ed2k_and_size ON anidb_file_negative_cache(ed2k, size);
-            
+            -- used to expire entries quickly
+            CREATE INDEX IF NOT EXISTS anidb_file_negative_cache_expiration_id ON anidb_file_negative_cache(expiration, id);
+
             CREATE TABLE IF NOT EXISTS anidb_files (
                 id INTEGER PRIMARY KEY,
                 fid INTEGER,
@@ -99,9 +101,6 @@ class AnidbConnector:
             CREATE UNIQUE INDEX IF NOT EXISTS anidb_files_ed2k_and_size ON anidb_files(ed2k, size);
             CREATE UNIQUE INDEX IF NOT EXISTS anidb_files_fid ON anidb_files(fid);
 
-            -- used to expire entries quickly
-            CREATE INDEX IF NOT EXISTS anidb_file_negative_cache_expiration_id ON anidb_file_negative_cache(expiration, id);
-
             CREATE TABLE IF NOT EXISTS metadata (
                 object_prop_key TEXT PRIMARY KEY,
                 prop_value TEXT,
@@ -109,6 +108,15 @@ class AnidbConnector:
             );
             -- used to expire entries quickly
             CREATE INDEX IF NOT EXISTS metadata_expiration_id ON metadata(expiration, object_prop_key);
+
+            
+            -- CREATE TABLE IF NOT EXISTS file_lookup_cache (
+            --     filename TEXT PRIMARY KEY,
+            --     ed2k TEXT,
+            --     size INTEGER,
+            --     expiration INTEGER
+            -- );
+            -- CREATE UNIQUE INDEX IF NOT EXISTS file_lookup_cache_ed2k_and_size ON file_lookup_cache(expiration, filename);
         ''').fetchall()
 
     def inject_negative_cache_record(self, ed2k, size):
@@ -120,47 +128,60 @@ class AnidbConnector:
             ''', ed2k, size, int(expiration.timestamp()))
 
     def check_negative_cache(self, req):
+        # req. 
+        # print(f"\n\n\rXXX :: req = {req!r}\n\n", file=sys.stderr)
         hash_key = None
-        if isinstance(req, dict):
+        if isinstance(req, FileRequest):
+            if isinstance(req.key, FileKeyFID):
+                # If we have a File ID, then this file cannot be unknown.
+                return False
+            assert isinstance(req.key, FileKeyED2K)
+            hash_key = req.key
+        elif isinstance(req, dict):
             ed2k = req.get('ed2k', None)
             size = req.get('size', None)
             if ed2k is not None and size is not None:
                 hash_key = FileKeyED2K(ed2k, size)
-        elif hasattr(req, 'construct_hash_key'):
-            hash_key = req.construct_hash_key()
-        if hash_key is None:
+        elif hash_key is None:
             return False
 
         with self._cache:
             now = datetime.now()
-
-            self._cache.execute('DELETE FROM anidb_file_negative_cache WHERE expiration < ?', (int(now.timestamp()), ))
-            query = '''
-                SELECT expiration
-                FROM anidb_file_negative_cache
-                WHERE ed2k = ? AND size = ? AND ? <= expiration
-            '''
-            for (_one, ) in self._cache.execute(query, (hash_key.ed2k, hash_key.size, int(now.timestamp()))):
-                return True
+            if isinstance(hash_key, FileKeyED2K):
+                self._cache.execute('DELETE FROM anidb_file_negative_cache WHERE expiration < ?', (int(now.timestamp()), ))
+                query = '''
+                    SELECT expiration
+                    FROM anidb_file_negative_cache
+                    WHERE ed2k = ? AND size = ? AND ? <= expiration
+                '''
+                for (_one, ) in self._cache.execute(query, (hash_key.ed2k, hash_key.size, int(now.timestamp()))):
+                    return True
+            elif isinstance(hash_key, FileKeyFID):
+                # If we have a File ID, then this file cannot be unknown.
+                return False
+            else:
+                cls_name = "{0.__class__.__module__}.{0.__class__.__name__}".format(hash_key)
+                allowed = {FileKeyED2K, FileKeyFID}
+                raise TypeError("expected hash key (in {0!r}), got {1}: {2}".format(allowed, cls_name, hash_key))
         return False
 
     def _inject_cache_file_identifier(self, req, accumulated_response):
-        hash_key = req.construct_hash_key()
-        print("_inject_cache_file_identifier(req={!r}, accumulated_response={!r}): hash_key={!r}".format(req, accumulated_response, hash_key), file=sys.stderr)
-        with self._cache:
-            self._cache.execute('''
-                INSERT INTO anidb_files(fid, ed2k, size) VALUES(?, ?, ?)
-                    ON CONFLICT DO NOTHING;
-            ''', (
-                accumulated_response.decoded['fid'],
-                hash_key.ed2k, hash_key.size,
-            ))
+        # print("_inject_cache_file_identifier(req={!r}, accumulated_response={!r})".format(req, accumulated_response), file=sys.stderr)
+        if isinstance(req.key, FileKeyED2K):
+            with self._cache:
+                self._cache.execute('''
+                    INSERT INTO anidb_files(fid, ed2k, size) VALUES(?, ?, ?)
+                        ON CONFLICT DO NOTHING;
+                ''', (
+                    accumulated_response.decoded['fid'],
+                    req.key.ed2k, req.key.size,
+                ))
 
     def _inject_cache_file(self, req, accumulated_response):
         object_key = f"f{accumulated_response.decoded['fid']}"
         expiration = datetime.now() + timedelta(days=300)
         with self._cache:
-            for (k, v) in accumulated_response.iter_raw_kv(req):
+            for (k, v) in accumulated_response.iter_raw_kv(req, suppress_truncation_error=True):
                 exec_args = ('{}:{}'.format(object_key, k.name), v, int(expiration.timestamp()))
                 self._cache.execute('''
                     INSERT INTO metadata(object_prop_key, prop_value, expiration) VALUES(?, ?, ?)
@@ -211,7 +232,7 @@ class AnidbConnector:
 
     def _send_request_raw(self, data, suppress_encryption=False):
         if self._suppress_network_activity:
-            raise 'network activity suppressed'
+            raise Exception('network activity suppressed')
         now = time.monotonic()
         since_last_sent = now - self._last_sent_request
         if since_last_sent < 2.0:
@@ -230,7 +251,7 @@ class AnidbConnector:
 
     def _login(self):
         if self._suppress_network_activity:
-            raise 'network activity suppressed'
+           raise Exception('network activity suppressed')
         if self._session:
             return
         (username, password) = self._credentials
@@ -280,23 +301,21 @@ class AnidbConnector:
                 for (prop_value, ) in self._cache.execute('SELECT prop_value FROM metadata WHERE object_prop_key = ?', (object_prop_key, )):
                     yield f, f.filter_value(prop_value)
 
-
     def send_request(self, req):
-        # self._suppress_network_activity = True
         if self.check_negative_cache(req):
             return AnidbResponse(AnidbResponse.CODE_RESULT_NO_SUCH_FILE, 'NO SUCH FILE (cached)')
 
         locally_serviced_fields = {}
-        hash_key = req.construct_hash_key()
         want_fields = set(req.fields)
-        if hash_key is not None:
-            for (f, v) in self._locally_service_field_values(hash_key, req.fields):
-                locally_serviced_fields[f.name] = v
-                if not isinstance(f, ImplicitField):
-                    want_fields.remove(f)
 
-        # print(f"locally_serviced_fields = {locally_serviced_fields!r}", file=sys.stderr)
-        # print(f"need network access for = {want_fields!r}", file=sys.stderr)
+        for (f, v) in self._locally_service_field_values(req.key, req.fields):
+            locally_serviced_fields[f.name] = v
+            if not isinstance(f, ImplicitField):
+                want_fields.remove(f)
+
+        req.fields = [f for f in req.fields if f in want_fields]
+        print(f"locally_serviced_fields = {locally_serviced_fields!r}", file=sys.stderr)
+        print(f"need network access for = {req.fields!r}", file=sys.stderr)
         if not want_fields:
             return AnidbResponse(AnidbResponse.CODE_RESULT_FILE, '', decoded=locally_serviced_fields)
 
