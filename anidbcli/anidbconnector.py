@@ -49,6 +49,7 @@ class ImplicitField(namedtuple('_ImplicitField', ['name'])):
 
 
 class AnidbConnector:
+    DEFAULT_SLEEP_INTERVAL_SECONDS = 2.0
     def __init__(self, credentials, *, bind_addr=None, salt=None, session=None, persistent=False, api_key=None):
         """For class initialization use class methods create_plain or create_secure."""
         self._suppress_network_activity = False
@@ -61,6 +62,7 @@ class AnidbConnector:
         self._salt = salt
         self._session = session
         self._bind_addr = None
+        self._sleep_interval = self.DEFAULT_SLEEP_INTERVAL_SECONDS
         if bind_addr:
             self._bind_addr = tuple(bind_addr)
 
@@ -77,6 +79,10 @@ class AnidbConnector:
             instance._crypto = encryptors.Aes128TextEncryptor(md5.digest())
 
         self._initialize_socket()
+        try:
+            os.mkdir(get_persistence_base_path())
+        except FileExistsError:
+            pass
         self._cache = sqlite3.connect(
             get_cache_path(),
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
@@ -119,15 +125,20 @@ class AnidbConnector:
             -- CREATE UNIQUE INDEX IF NOT EXISTS file_lookup_cache_ed2k_and_size ON file_lookup_cache(expiration, filename);
         ''').fetchall()
 
-    def inject_negative_cache_record(self, ed2k, size):
+    def _inject_negative_cache_record(self, req):
+        if hasattr(req, 'key') and isinstance(req.key, FileKeyED2K):
+            return self._inject_negative_cache_record_deprecated(req.key.ed2k, req.key.size)
+        print("want to insert negative cache record for {!r}, but type is not understood", file=sys.stderr)
+
+    def _inject_negative_cache_record_deprecated(self, ed2k, size):
         with self._cache:
             expiration = datetime.now() + timedelta(days=300)
             self._cache.execute('''
                 INSERT INTO anidb_file_negative_cache(ed2k, size, expiration) VALUES(?, ?, ?)
                     ON CONFLICT(ed2k, size) DO UPDATE SET expiration = excluded.expiration;
-            ''', ed2k, size, int(expiration.timestamp()))
+            ''', (ed2k, size, int(expiration.timestamp())))
 
-    def check_negative_cache(self, req):
+    def _check_negative_cache(self, req):
         # req. 
         # print(f"\n\n\rXXX :: req = {req!r}\n\n", file=sys.stderr)
         hash_key = None
@@ -167,7 +178,7 @@ class AnidbConnector:
 
     def _inject_cache_file_identifier(self, req, accumulated_response):
         # print("_inject_cache_file_identifier(req={!r}, accumulated_response={!r})".format(req, accumulated_response), file=sys.stderr)
-        if isinstance(req.key, FileKeyED2K):
+        if hasattr(req, 'key') and isinstance(req.key, FileKeyED2K):
             with self._cache:
                 self._cache.execute('''
                     INSERT INTO anidb_files(fid, ed2k, size) VALUES(?, ?, ?)
@@ -235,8 +246,8 @@ class AnidbConnector:
             raise Exception('network activity suppressed')
         now = time.monotonic()
         since_last_sent = now - self._last_sent_request
-        if since_last_sent < 2.0:
-            time.sleep(2.0 - since_last_sent)
+        if since_last_sent < self._sleep_interval:
+            time.sleep(self._sleep_interval - since_last_sent)
         self._last_sent_request = now
 
         if not suppress_encryption:
@@ -244,7 +255,9 @@ class AnidbConnector:
         self._socket.send(data)
         response = self._socket.recv(MAX_RECEIVE_SIZE)
         if response.startswith(b'555 '):
-            raise AnidbApiBanned(response.decode('utf-8'))
+            raise AnidbApiBanned(
+                response.decode('utf-8'),
+                code_received=555)
         if not suppress_encryption:
             response = self._crypto.Decrypt(response)
         return AnidbResponse.parse(response.rstrip("\n"))
@@ -295,44 +308,48 @@ class AnidbConnector:
                 for (fid, ) in self._cache.execute('SELECT fid FROM anidb_files WHERE ed2k = ? AND size = ?', (key.ed2k, key.size)):
                     key = FileKeyFID(fid)
         if isinstance(key, FileKeyFID):
-            yield ImplicitField('fid'), fid
+            yield ImplicitField('fid'), key.fid
             for f in fields:
                 object_prop_key = "{}:{}".format(key, f.name)
                 for (prop_value, ) in self._cache.execute('SELECT prop_value FROM metadata WHERE object_prop_key = ?', (object_prop_key, )):
                     yield f, f.filter_value(prop_value)
 
     def send_request(self, req):
-        if self.check_negative_cache(req):
+        if self._check_negative_cache(req):
             return AnidbResponse(AnidbResponse.CODE_RESULT_NO_SUCH_FILE, 'NO SUCH FILE (cached)')
 
         locally_serviced_fields = {}
         want_fields = set(req.fields)
-
-        for (f, v) in self._locally_service_field_values(req.key, req.fields):
-            locally_serviced_fields[f.name] = v
-            if not isinstance(f, ImplicitField):
-                want_fields.remove(f)
+        if isinstance(req, FileRequest):
+            for (f, v) in self._locally_service_field_values(req.key, req.fields):
+                locally_serviced_fields[f.name] = v
+                if not isinstance(f, ImplicitField):
+                    want_fields.remove(f)
+            print(f"locally_serviced_fields = {locally_serviced_fields!r}", file=sys.stderr)
 
         req.fields = [f for f in req.fields if f in want_fields]
-        print(f"locally_serviced_fields = {locally_serviced_fields!r}", file=sys.stderr)
-        print(f"need network access for = {req.fields!r}", file=sys.stderr)
-        if not want_fields:
+        if isinstance(req, FileRequest) and not req.fields:
             return AnidbResponse(AnidbResponse.CODE_RESULT_FILE, '', decoded=locally_serviced_fields)
+        
+        print(f"need network access for = {req.fields!r}", file=sys.stderr)
 
+        if isinstance(req, FileRequest) and self._suppress_network_activity:
+            return AnidbResponse(AnidbResponse.CODE_RESULT_NO_SUCH_FILE, 'NO SUCH FILE (suppressed query and not cached)')
+        
         is_rich = False
         if isinstance(req, AnidbApiCall):
             # if hasattr(req, 'next_request'):
             #     return self.send_request_helper2(req)
             is_rich = True
             res = self.send_request_helper_legacy(req.serialize())
+            try:
+                req.validate_response_has_valid_code(res)
+            except AnidbApiNotFound as e:
+                self._inject_negative_cache_record(req)
         else:
             res = self.send_request_helper_legacy(req)
         if is_rich:
             res.decode_with_query(req, suppress_truncation_error=True)
+            self._inject_cache(req, req)
 
-        if is_rich and res.code == AnidbResponse.CODE_RESULT_NO_SUCH_FILE:
-            self.inject_negative_cache_record(ed2k, size)
-        if is_rich and res.code == AnidbResponse.CODE_RESULT_FILE:
-            self._inject_cache_file_identifier(req, res)
-            self._inject_cache_file(req, res)
         return res

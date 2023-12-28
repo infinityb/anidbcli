@@ -1,7 +1,7 @@
-{ pkgs, python37, zip }:
+{ pkgs, python39, zip }:
 {
 	anidbcliZip = let
-		python = python37.withPackages (python-packages: with python-packages; [
+		python = python39.withPackages (python-packages: with python-packages; [
 			click
 			pycryptodome
 			colorama

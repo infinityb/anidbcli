@@ -22,7 +22,7 @@ RESULT_ALREADY_IN_MYLIST = 310
 
 
 def IsNullOrWhitespace(s):
-        return s is None or s.isspace() or s == ""
+    return s is None or s.isspace() or s == ""
 
 
 class Operation:
@@ -94,15 +94,13 @@ class GetFileInfoOperation(Operation):
     def __call__(self, file):
         ed2k = file['ed2k']
         size = file['size']
-        if self.connector.check_negative_cache(file):
-            self.output.error(f"{ed2k}:{size} is present in negative, skipped")
-            return False
+        
         request = FileRequest(size=size, ed2k=ed2k, fields=[
             FileFmaskField.f.aid,
             FileFmaskField.f.eid,
             FileFmaskField.f.gid,
             FileFmaskField.f.lid,
-            FileFmaskField.f.file_state,
+            # FileFmaskField.f.file_state,
             FileFmaskField.f.size,
             FileFmaskField.f.ed2k,
             FileFmaskField.f.md5,
@@ -155,7 +153,7 @@ class GetFileInfoOperation(Operation):
             if res.code != AnidbResponse.CODE_RESULT_FILE:
                 self.output.error(f"Failed to get file info: {res!r}")
                 return False
-            print(f"processing {res!r} -<- {request!r}")
+            print(f"processing {res!r} -<- {request!r}", file=sys.stderr)
             # res.decode_with_query(request, suppress_truncation_error=True)
             fileinfo.update(res.decoded)
             request = request.next_request(res)
@@ -163,13 +161,13 @@ class GetFileInfoOperation(Operation):
         fileinfo["version"] = ""
         fileinfo["censored"] = ""
         
-        status = int(fileinfo["file_state"])
-        if status & 4: fileinfo["version"] = "v2"
-        if status & 8: fileinfo["version"] = "v3"
-        if status & 16: fileinfo["version"] = "v4"
-        if status & 32: fileinfo["version"] = "v5"
-        if status & 64: fileinfo["censored"] = "uncensored"
-        if status & 128: fileinfo["censored"] = "censored"
+        # status = int(fileinfo["file_state"])
+        # if status & 4: fileinfo["version"] = "v2"
+        # if status & 8: fileinfo["version"] = "v3"
+        # if status & 16: fileinfo["version"] = "v4"
+        # if status & 32: fileinfo["version"] = "v5"
+        # if status & 64: fileinfo["censored"] = "uncensored"
+        # if status & 128: fileinfo["censored"] = "censored"
 
         if IsNullOrWhitespace(fileinfo["ep_english"]):
             fileinfo["ep_english"] = fileinfo["ep_romaji"]
@@ -228,8 +226,9 @@ class RenameOperation(Operation):
                         if e.errno != errno.EEXIST:
                             raise
                     if verify_link_required:
-                        if os.readlink(tmp_tgt + file_extension) != file["file_path"]:
-                            raise RuntimeError("symlinking failed and destination doesn't match source")
+                        linked_path = tmp_tgt + file_extension
+                        if os.readlink(linked_path) != file["file_path"]:
+                            raise RuntimeError("symlinking failed and destination doesn't match source {!r} != {!r}".format(linked_path, file["file_path"]))
                         msg_prefix = "Reused existing symlink"
                     self.output.success(f"{msg_prefix}: {tmp_tgt + file_extension!r}")
                 elif self.hard_link:
@@ -258,7 +257,7 @@ def filename_friendly(input):
 
 
 def construct_helper_tags(fileinfo):
-    year_list = re.findall('(\d{4})', fileinfo["year"])
+    year_list = re.findall(r'(\d{4})', fileinfo["year"])
     if (len(year_list) > 0):
         fileinfo["year_start"] = year_list[0]
         fileinfo["year_end"] = year_list[-1]

@@ -1,4 +1,6 @@
 import colorama
+import sys
+
 
 class CliOutput:
     def __init__(self, quiet):
@@ -11,7 +13,7 @@ class CliOutput:
         else:
             colorama.init()
             self.initialized = True
-        print(message)
+        print(message, file=sys.stderr)
         colorama.deinit()
 
     def info(self, message):

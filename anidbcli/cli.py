@@ -3,12 +3,16 @@ import os
 import time
 import sys
 import json
+from base64 import b64encode, b64decode
+
 import pyperclip
 import anidbcli.libed2k as libed2k
 import anidbcli.anidbconnector as anidbconnector
 import anidbcli.output as output
 import anidbcli.operations as operations
 import traceback
+import multiprocessing as mp
+
 
 @click.group(name="anidbcli")
 @click.version_option(version="1.66", prog_name="anidbcli")
@@ -50,6 +54,7 @@ def ed2k(ctx , files, clipboard):
 @click.option('--password', "-p", prompt=True, hide_input=True)
 @click.option('--apikey', "-k")
 @click.option("--api2", "-2", is_flag=True, default=False, help="Use new implementation")
+@click.option("--api-2x", is_flag=True, default=False, help="Use new implementation x")
 @click.option("--add", "-a", is_flag=True, default=False, help="Add files to mylist.")
 @click.option("--unwatched", "-U", is_flag=True, default=False, help="Add files to mylist as unwatched. Use with -a flag.")
 @click.option("--rename", "-r",  default=None, help="Rename the files according to provided format. See documentation for more info.")
@@ -62,11 +67,14 @@ def ed2k(ctx , files, clipboard):
 @click.option("--abort", default=False, is_flag=True, help="Abort if an usable tag is empty.")
 @click.option("--state", default=0, help="Specify the file state. (0-4)")
 @click.option("--show-ed2k", default=False, is_flag=True, help="Show ed2k link of processed file (while adding or renaming files).")
+@click.option("--suppress-network-activity", default=False, is_flag=True, help="suppress network activity")
 @click.argument("files", nargs=-1, type=click.Path(exists=True))
 @click.pass_context
-def api(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k):
+def api(ctx, username, password, apikey, api2, api_2x, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k, suppress_network_activity):
+    if api_2x:
+        return api_2x_impl(ctx, username, password, apikey, api2, api_2x, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k, suppress_network_activity)
     if api2:
-        return api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k)
+        return api2impl(ctx, username, password, apikey, api2, api_2x, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k, suppress_network_activity)
     if not add and not rename:
         ctx.obj["output"].info("Nothing to do.")
         return
@@ -96,85 +104,113 @@ def api(ctx, username, password, apikey, api2, add, unwatched, rename, files, ke
     conn.close()
 
 
-def api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k):
-    if not rename:
-        ctx.obj["output"].info("Nothing to do.")
-        return
+
+def api_2x_impl(ctx, username, password, apikey, api2, api_2x, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k, suppress_network_activity):
     conn = get_connector(apikey, username, password, persistent)
-    linkhive_base_path = '/storage/metameta/anime-links-by-ed2k'
-    scan_exempt = set()
-    known_keys = set()
-    with os.scandir(linkhive_base_path) as scan:
-        for entry in scan:
-            parts = entry.name.split('-', 2)
-            if len(parts) != 2:
-                continue
-            try:
-                link_target = os.readlink(entry.path)
-            except OSError as e:
-                if e.errno == errno.EINVAL:
-                    continue
-                else:
-                    raise
-            (ed2k, size) = parts
-            size = int(size, 16)
-            known_keys.add((ed2k, size))
-            scan_exempt.add(link_target)
-
-    def check_exemption(file):
-        if file['path'] in scan_exempt:
-            return False
-        return True
-
-    def rewrite_hive_path(file):
-        fid_natural_key = (file['ed2k'], file['size'])
-        linkhive_path = os.path.join(linkhive_base_path, f'{fid_natural_key[0]:>032}-{fid_natural_key[1]:016x}')
-        
-        link_is_in_hive = fid_natural_key in known_keys
-        link_is_self_target = False
-        if link_is_in_hive:
-            link_target = os.readlink(linkhive_path)
-
-            # cleans up broken link
-            if os.path.lexists(link_target) and not os.path.exists(link_target):
-                os.unlink(link_target)
-                link_is_in_hive = False
-            if link_is_in_hive:
-                link_is_self_target = link_target == file['path']
-        if not link_is_in_hive:
-            file['path'] = linkhive_path
-            file['file_path'] = linkhive_path
-            os.symlink(file_path, linkhive_path)
-            link_is_self_target = True
-        return link_is_self_target
+    conn._suppress_network_activity = suppress_network_activity
 
     pipeline = []
-    # pipeline.append(check_exemption)
-    pipeline.append(operations.hash_operation_factory(ctx.obj["output"], show_ed2k))
     pipeline.append(operations.GetFileInfoOperation(conn, ctx.obj["output"]))
-    #pipeline.append(rewrite_hive_path)
-    pipeline.append(operations.RenameOperation(ctx.obj["output"], rename, date_format, delete_empty, keep_structure, softlink, link, abort))
+    
+    file_objs_to_process = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        if line == "END":
+            break
+        if line.startswith("LOOKUP "):
+            line = line.removeprefix("LOOKUP ")
+            (ed2k, size) = line.split('-')
+            size = int(size)
+            doc = {
+                'ed2k': ed2k,
+                'size': size,
+            }
+            file_objs_to_process.append(doc)
+            print(f"register {doc!r}", file=sys.stderr)
 
-    to_process = get_files_to_process(files, ctx)
-    for file_path in to_process:
-        file_obj = {}
-        file_obj["path"] = file_path
-        file_obj["file_path"] = file_path
-        ctx.obj["output"].info(f"Processing file {file_path!r}")
-        
+    for file_obj in file_objs_to_process:
         for operation in pipeline:
             try:
                 res = operation(file_obj)
             except Exception as e:
                 if 'file_path' in file_obj:
-                    ctx.obj["output"].error(f"error running {operation!r} on {file_obj['path']!r}: {e}")
+                    ctx.obj["output"].error(f"error running {operation!r} on {file_obj['file_path']!r}: {e}")
+                else:
+                    ctx.obj["output"].error(f"error running {operation!r} on file_obj={file_obj!r}: {e}")
+                    print(traceback.format_exc(), file=sys.stderr)
+                    break
+            if not res:  # Critical error, cannot proceed with pipeline
+                break
+    for file_obj in file_objs_to_process:
+        if 'info' in file_obj:
+            print(f"SUCC {file_obj['ed2k']}-{file_obj['size']} {json.dumps(file_obj['info'], default=json_serial)}")
+    for file_obj in file_objs_to_process:
+        if 'info' not in file_obj:
+            print(f"FAIL {file_obj['ed2k']}-{file_obj['size']}")
+    conn.close()
+
+
+def api2impl(ctx, username, password, apikey, api2, add, unwatched, rename, files, keep_structure, date_format, delete_empty, link, softlink, persistent, abort, state, show_ed2k, suppress_network_activity):
+    if not rename:
+        ctx.obj["output"].info("Nothing to do.")
+        return
+    conn = get_connector(apikey, username, password, persistent)
+    conn._suppress_network_activity = suppress_network_activity
+
+    pipeline = []
+    pipeline.append(operations.HashOperation(ctx.obj["output"], show_ed2k))
+    pipeline.append(operations.GetFileInfoOperation(conn, ctx.obj["output"]))
+    pipeline.append(operations.RenameOperation(ctx.obj["output"], rename, date_format, delete_empty, keep_structure, softlink, link, abort))
+    
+    file_objs_to_process = []
+    for file_path in get_files_to_process(files, ctx):
+        file_objs_to_process.append({'file_path': file_path})
+
+    # decorate_with_cached(file_objs_to_process)
+    # print("{!r}".format(file_objs_to_process))
+    # for file_obj in list(map(decorate_with_hash, file_objs_to_process)):
+    for file_obj in file_objs_to_process:
+        for operation in pipeline:
+            try:
+                file_obj = decorate_with_hash(file_obj)
+                res = operation(file_obj)
+            except Exception as e:
+                if 'file_path' in file_obj:
+                    ctx.obj["output"].error(f"error running {operation!r} on {file_obj['file_path']!r}: {e}")
                 else:
                     ctx.obj["output"].error(f"error running {operation!r} on file_obj={file_obj!r}: {e}")
                 print(traceback.format_exc(), file=sys.stderr)
                 break
-            if not res: # Critical error, cannot proceed with pipeline
+            if not res:  # Critical error, cannot proceed with pipeline
                 break
     conn.close()
+
+
+def decorate_with_cached(file_objs):
+    values = dict()
+    with open(get_ed2k_cache_path(), 'r') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            [file_path_b64, *extras] = json.loads(line)
+            values[b64decode(file_path_b64).decode('utf-8')] = extras
+
+    print("", file=sys.stderr)
+    for obj in file_objs:
+        vv = values.get(obj['file_path'], None)
+        print(f"got vv: {vv!r}", file=sys.stderr)
+        if vv is not None:
+            (ed2k, size) = vv
+            file_size = os.path.getsize(obj['file_path'])
+            if file_size == size:
+                print(f"sz-match ok", file=sys.stderr)
+                obj['size'] = size
+                obj['ed2k'] = ed2k
+                obj['_used_ed2k_precache'] = True
+                print(f"obj = {obj!r}", file=sys.stderr)
 
 
 def get_connector(apikey, username, password, persistent):
@@ -195,7 +231,6 @@ def get_connector(apikey, username, password, persistent):
     return conn
 
 
-    
 def get_files_to_process(files, ctx):
     to_process = []
     for file in files:
@@ -217,6 +252,37 @@ def check_extension(path, extensions):
     else:
         _, file_extension = os.path.splitext(path)
         return file_extension.replace(".", "") in extensions
+
+
+def decorate_with_hash(doc):
+    if 'size' in doc and 'ed2k' in doc:
+        return doc
+    doc = dict(doc)
+    if 'size' not in doc:
+        doc['size'] = os.path.getsize(doc['file_path'])
+    if 'ed2k' not in doc:
+        doc['ed2k'] = libed2k.hash_file(doc['file_path'])
+    return doc 
+
+
+def get_persistence_base_path():
+    path = os.getenv("APPDATA")
+    if path is None: # Unix
+        return os.path.join(os.getenv("HOME"), ".anidbcli")
+    else:
+        return os.path.join(path, "anidbcli")
+
+
+def get_ed2k_cache_path():
+    return os.path.join(get_persistence_base_path(), "ed2k-cache.bin")
+
+
+def json_serial(obj):
+    from datetime import date, datetime
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError("Type %s not serializable" % type(obj))
 
 
 def main():
