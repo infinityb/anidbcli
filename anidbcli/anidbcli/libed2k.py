@@ -26,8 +26,6 @@ def md4_hash(data):
 
 def hash_file(file_path, parallel=None):
     """ Returns the ed2k hash of a given file. """
-    from joblib import Parallel, parallel_backend, delayed
-
     def generator(f):
         while True:
             buf = f.read(CHUNK_SIZE)
@@ -46,8 +44,11 @@ def hash_file(file_path, parallel=None):
             # use threading, the loky backend is the same speed as sequential due
             # to the serialization time.  md4 functions shouldn't hold the GIL?
             if parallel is None:
+                from joblib import Parallel, parallel_backend, delayed
                 parallel = Parallel(prefer="threads", n_jobs=min(cpu_count, MAX_CORES))
-            hashes = parallel(delayed(md4_hash)(i) for i in generator(f))
+                hashes = parallel(delayed(md4_hash)(i) for i in generator(f))
+            else:
+                hashes = [md4_hash(i) for i in generator(f)]
         if len(hashes) == 1:
             return hashes[0].hex()
         else:

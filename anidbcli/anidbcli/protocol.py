@@ -1,3 +1,4 @@
+import sys
 import warnings
 from collections import namedtuple
 from datetime import datetime
@@ -33,6 +34,8 @@ def _deserialize_field(pytype, field_value):
     if pytype is str:
         return field_value
     if pytype == int:
+        if field_value == 'none':
+            return None
         return int(field_value)
     if pytype == datetime:
         return datetime.fromtimestamp(int(field_value))
@@ -51,7 +54,16 @@ class _ListOf:
         self._type = type
 
     def deserialize(self, data):
+        if data == 'none':
+            return []
         return list(_deserialize_field(self._type, x) for x in data.split('§'))
+
+    def _repr_fields(self):
+        yield ('_type', self._type)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
 
 class AnidbApiException(RuntimeError):
@@ -282,7 +294,7 @@ class FileRequest(AnidbApiCall):
         return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
 
-class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte', 'bit'])):
+class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['byte', 'bit', 'name'])):
     KNOWN_FIELDS = []
     BIT_POSITION_LOOKUP = {}
     f = type(object)('AnimeAmaskFieldHolder', (), {})
@@ -320,6 +332,9 @@ class AnimeAmaskField(MaskField, namedtuple('_AnimeAmaskField', ['name', 'byte',
                     analyzed.append(v)
         return analyzed
 
+    def short_code(self):
+        return f"anime_amask_{self.name}"
+
 
 class FileFmaskField(MaskField):
     BYTE_LENGTH = 5
@@ -348,11 +363,24 @@ class FileFmaskField(MaskField):
         cls.KNOWN_FIELDS = sorted(cls.KNOWN_FIELDS + values)
 
     def filter_value(self, field_value):
-        return _deserialize_field(self.pytype, field_value)
+        try:
+            return _deserialize_field(self.pytype, field_value)
+        except ValueError:
+            print(f"XXX {self!r} -- {self.pytype!r} -- {field_value!r}", file=sys.stderr)
+            raise
 
     def to_bitfield(self):
         return 1 << 8 * (self.BYTE_LENGTH - self.byte) + self.bit
 
+    def _repr_fields(self):
+        yield ('byte', self.byte)
+        yield ('bit', self.bit)
+        yield ('name', self.name)
+        yield ('pytype', self.pytype)
+
+    def __repr__(self):
+        keys = ', '.join("{}={!r}".format(n, v) for (n, v) in self._repr_fields())
+        return "{0.__class__.__module__}.{0.__class__.__name__}({1})".format(self, keys)
 
     @classmethod
     def analyze(cls, mask):
@@ -367,6 +395,8 @@ class FileFmaskField(MaskField):
                     analyzed.append(v)
         return analyzed
 
+    def short_code(self):
+        return f"file_fmask_{self.name}"
 
 FileFmaskField.register_all([
     # FileFmaskField(1, 7, 'unused'),
@@ -413,7 +443,7 @@ FileFmaskField.register_all([
     FileFmaskField(5, 2, 'mylist_source', str),
     FileFmaskField(5, 1, 'mylist_other', str),
     # FileFmaskField(5, 0, 'unused'),
-]);
+])
 
 
 class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'name' ,'pytype'])):
@@ -453,6 +483,9 @@ class FileAmaskField(MaskField, namedtuple('_FileAmaskField', ['byte', 'bit', 'n
                     analyzed.append(v)
         return analyzed
 
+    def short_code(self):
+        return f"file_amask_{self.name}"
+
 
 FileAmaskField.register_all([
     FileAmaskField(1, 7, 'ep_total', None),  # was: anime_total_episodes
@@ -483,52 +516,52 @@ FileAmaskField.register_all([
 ])
 
 AnimeAmaskField.register_all([
-    AnimeAmaskField('aid', 1, 7),
-    AnimeAmaskField('dateflags', 1, 6),
-    AnimeAmaskField('year', 1, 5),
-    AnimeAmaskField('type', 1, 4),
-    AnimeAmaskField('related_aid_list', 1, 3),
-    AnimeAmaskField('related_aid_type', 1, 2),
+    AnimeAmaskField(1, 7, 'aid'),
+    AnimeAmaskField(1, 6, 'dateflags'),
+    AnimeAmaskField(1, 5, 'year'),
+    AnimeAmaskField(1, 4, 'type'),
+    AnimeAmaskField(1, 3, 'related_aid_list'),
+    AnimeAmaskField(1, 2, 'related_aid_type'),
 
-    AnimeAmaskField('romaji_name', 2, 7),
-    AnimeAmaskField('kanji_name', 2, 6),
-    AnimeAmaskField('english_name', 2, 5),
-    AnimeAmaskField('other_name', 2, 4),
-    AnimeAmaskField('short_name_list', 2, 3),
-    AnimeAmaskField('synonym_list', 2, 2),
+    AnimeAmaskField(2, 7, 'romaji_name'),
+    AnimeAmaskField(2, 6, 'kanji_name'),
+    AnimeAmaskField(2, 5, 'english_name'),
+    AnimeAmaskField(2, 4, 'other_name'),
+    AnimeAmaskField(2, 3, 'short_name_list'),
+    AnimeAmaskField(2, 2, 'synonym_list'),
 
-    AnimeAmaskField('episodes', 3, 7),
-    AnimeAmaskField('highest_episode_number', 3, 6),
-    AnimeAmaskField('special_ep_count', 3, 5),
-    AnimeAmaskField('air_date', 3, 4),
-    AnimeAmaskField('end_date', 3, 3),
-    AnimeAmaskField('url', 3, 2),
-    AnimeAmaskField('picname', 3, 1),
+    AnimeAmaskField(3, 7, 'episodes'),
+    AnimeAmaskField(3, 6, 'highest_episode_number'),
+    AnimeAmaskField(3, 5, 'special_ep_count'),
+    AnimeAmaskField(3, 4, 'air_date'),
+    AnimeAmaskField(3, 3, 'end_date'),
+    AnimeAmaskField(3, 2, 'url'),
+    AnimeAmaskField(3, 1, 'picname'),
 
-    AnimeAmaskField('rating', 4, 7),
-    AnimeAmaskField('vote_count', 4, 6),
-    AnimeAmaskField('temp_rating', 4, 5),
-    AnimeAmaskField('temp_vote_count', 4, 4),
-    AnimeAmaskField('average_review_rating', 4, 3),
-    AnimeAmaskField('review_count', 4, 2),
-    AnimeAmaskField('award_list', 4, 1),
-    AnimeAmaskField('is_18plus_restricted', 4, 0),
+    AnimeAmaskField(4, 7, 'rating'),
+    AnimeAmaskField(4, 6, 'vote_count'),
+    AnimeAmaskField(4, 5, 'temp_rating'),
+    AnimeAmaskField(4, 4, 'temp_vote_count'),
+    AnimeAmaskField(4, 3, 'average_review_rating'),
+    AnimeAmaskField(4, 2, 'review_count'),
+    AnimeAmaskField(4, 1, 'award_list'),
+    AnimeAmaskField(4, 0, 'is_18plus_restricted'),
 
-    AnimeAmaskField('ann_id', 5, 6),
-    AnimeAmaskField('allcinema_id', 5, 5),
-    AnimeAmaskField('animenfo_id', 5, 4),
-    AnimeAmaskField('tag_name_list', 5, 3),
-    AnimeAmaskField('tag_id_list', 5, 2),
-    AnimeAmaskField('tag_weight_list', 5, 1),
-    AnimeAmaskField('date_record_updated', 5, 0),
+    AnimeAmaskField(5, 6, 'ann_id'),
+    AnimeAmaskField(5, 5, 'allcinema_id'),
+    AnimeAmaskField(5, 4, 'animenfo_id'),
+    AnimeAmaskField(5, 3, 'tag_name_list'),
+    AnimeAmaskField(5, 2, 'tag_id_list'),
+    AnimeAmaskField(5, 1, 'tag_weight_list'),
+    AnimeAmaskField(5, 0, 'date_record_updated'),
 
-    AnimeAmaskField('character_id_list', 6, 7),
+    AnimeAmaskField(6, 7, 'character_id_list'),
 
-    AnimeAmaskField('specials_count', 7, 7),
-    AnimeAmaskField('credits_count', 7, 6),
-    AnimeAmaskField('other_count', 7, 5),
-    AnimeAmaskField('trailer_count', 7, 4),
-    AnimeAmaskField('parody_count', 7, 3),
+    AnimeAmaskField(7, 7, 'specials_count'),
+    AnimeAmaskField(7, 6, 'credits_count'),
+    AnimeAmaskField(7, 5, 'other_count'),
+    AnimeAmaskField(7, 4, 'trailer_count'),
+    AnimeAmaskField(7, 3, 'parody_count'),
 ])
 
 

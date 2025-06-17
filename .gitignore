@@ -103,3 +103,5 @@ ENV/
 __venv__
 .pytest_cache
 .vscode
+
+/result

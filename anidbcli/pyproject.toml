@@ -1,0 +1,15 @@
+[build-system]
+requires = [
+    "setuptools >= 48",
+    "wheel",
+    # "torch",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = 'anidbcli'
+version = "1.0"
+
+[project.scripts]
+anidbcli-api = "anidbcli.cli:main"
+

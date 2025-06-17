@@ -29,6 +29,3 @@ class CliOutput:
 
     def error(self, message):
         self.__write_message("%s[ERROR]%s %s" % (colorama.Fore.RED, colorama.Style.RESET_ALL, str(message)))
-        
-
-            
