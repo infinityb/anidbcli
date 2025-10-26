@@ -176,12 +176,14 @@ class AnidbCacheSqlAlchemy:
             conn.commit()
 
     def _inject_cache_file_identifier(self, req, accumulated_response):
+        now = datetime.now()
         if hasattr(req, 'key') and isinstance(req.key, FileKeyED2K):
             with self._sqlite_engine.connect() as conn:
                 query = insert(anidb_files).values(
                     fid=accumulated_response.decoded['fid'],
                     ed2k=req.key.ed2k,
                     size=req.key.size,
+                    expiration=int((now + timedelta(days=1200)).timestamp()),
                 )
                 conn.execute(query)
                 conn.commit()
